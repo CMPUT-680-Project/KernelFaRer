@@ -36,25 +36,6 @@ using namespace StencilFaRer;
 // Anonymous namespace containing rewriter functions.
 namespace {
 
-// Alpha and Beta can be passed through CLI for the cases when the matcher does
-// not yet match them
-cl::opt<double> AlphaInit("alpha", cl::desc("alpha"), cl::ValueRequired,
-                          cl::init(1.0));
-cl::opt<double> BetaInit("beta", cl::desc("beta"), cl::ValueRequired,
-                         cl::init(1.0));
-
-// Command line argument that determines which mode we are replacing in.
-cl::opt<StencilFaRer::ReplacementMode> ReplaceMode(
-    "gemmfarer-replacement-mode",
-    cl::desc("Available kernel replacement methods."),
-    cl::values(clEnumValN(StencilFaRer::MatrixIntrinsics, "matrix-intrinsics",
-                          "Replace using llvm.matrix.* intrinsics."),
-               clEnumValN(StencilFaRer::CBLAS, "cblas-interface",
-                          "Replace using the CBLAS interface."),
-               clEnumValN(StencilFaRer::EIGEN, "eigen-runtime",
-                          "Replace using the eigen runtime interface.")),
-    cl::ValueRequired, cl::init(StencilFaRer::UNKNOWN));
-
 // Constants are from Eigen enum values.
 // https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Core/util/Constants.h#L316
 constexpr int32_t EigenColMaj = 0;
@@ -314,8 +295,8 @@ void buildBLASSYR2KCall(Module &Mod, IRBuilder<> &IR, const Kernel &Syr2k) {
               " downcast.\nThis operation is potentially illegal.\n";
 
   // Make args for alpha/beta.
-  auto *Alpha = prepBLASScalar(IR, Syr2k.getAlpha(), opTy, AlphaInit);
-  auto *Beta = prepBLASScalar(IR, Syr2k.getBeta(), opTy, BetaInit);
+  auto *Alpha = prepBLASScalar(IR, Syr2k.getAlpha(), opTy, 1.0);
+  auto *Beta = prepBLASScalar(IR, Syr2k.getBeta(), opTy, 1.0);
 
   // Sanity type checking.
   assert(getMatrixElementType(*A) == opTy && "A and C are typed differently.");

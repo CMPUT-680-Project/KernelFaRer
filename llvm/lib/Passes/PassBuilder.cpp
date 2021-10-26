@@ -205,6 +205,7 @@
 #include "llvm/Transforms/Scalar/Sink.h"
 #include "llvm/Transforms/Scalar/SpeculateAroundPHIs.h"
 #include "llvm/Transforms/Scalar/SpeculativeExecution.h"
+#include "llvm/Transforms/Scalar/StencilFaRer.h"
 #include "llvm/Transforms/Scalar/StraightLineStrengthReduce.h"
 #include "llvm/Transforms/Scalar/StructurizeCFG.h"
 #include "llvm/Transforms/Scalar/TailRecursionElimination.h"
@@ -318,6 +319,7 @@ extern cl::opt<bool> DisablePreInliner;
 extern cl::opt<int> PreInlineThreshold;
 
 extern cl::opt<bool> EnableKernelReplacer;
+extern cl::opt<bool> EnableStencilFinder;
 
 const PassBuilder::OptimizationLevel PassBuilder::OptimizationLevel::O0 = {
     /*SpeedLevel*/ 0,
@@ -1180,6 +1182,32 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
     MPM.addPass(SyntheticCountsPropagation());
 
   if (EnableKernelReplacer) {
+    MPM.addPass(createModuleToFunctionPassAdaptor(SROA()));
+    MPM.addPass(createModuleToFunctionPassAdaptor(EarlyCSEPass(true /* Enable mem-ssa. */)));
+    MPM.addPass(createModuleToFunctionPassAdaptor(SimplifyCFGPass()));
+    MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
+    MPM.addPass(createModuleToFunctionPassAdaptor(SimplifyCFGPass()));
+    MPM.addPass(createModuleToFunctionPassAdaptor(ReassociatePass()));
+    MPM.addPass(createModuleToFunctionPassAdaptor(createFunctionToLoopPassAdaptor(LICMPass(PTO.LicmMssaOptCap, PTO.LicmMssaNoAccForPromotionCap))));
+    MPM.addPass(createModuleToFunctionPassAdaptor(createFunctionToLoopPassAdaptor(SimpleLoopUnswitchPass())));
+    MPM.addPass(createModuleToFunctionPassAdaptor(SimplifyCFGPass()));
+    MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
+    MPM.addPass(createModuleToFunctionPassAdaptor(createFunctionToLoopPassAdaptor(LoopRotatePass())));
+    MPM.addPass(createModuleToFunctionPassAdaptor(createFunctionToLoopPassAdaptor(LoopInstSimplifyPass())));
+    MPM.addPass(createModuleToFunctionPassAdaptor(createFunctionToLoopPassAdaptor(LoopSimplifyCFGPass())));
+    MPM.addPass(createModuleToFunctionPassAdaptor(createFunctionToLoopPassAdaptor(IndVarSimplifyPass())));
+    MPM.addPass(createModuleToFunctionPassAdaptor(SimplifyCFGPass()));
+    MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
+    MPM.addPass(createModuleToFunctionPassAdaptor(DCEPass()));
+    MPM.addPass(createModuleToFunctionPassAdaptor(GEMMReplacerPass()));
+    MPM.addPass(createModuleToFunctionPassAdaptor(createFunctionToLoopPassAdaptor(LoopDeletionPass())));
+    MPM.addPass(createModuleToFunctionPassAdaptor(DCEPass()));
+    MPM.addPass(createModuleToFunctionPassAdaptor(SimplifyCFGPass()));
+    EnableMatrix = true;
+  }
+
+  // TODO: I am not sure if this makes sense if KernelFarer is also enabled
+  if (EnableStencilFinder) {
     MPM.addPass(createModuleToFunctionPassAdaptor(SROA()));
     MPM.addPass(createModuleToFunctionPassAdaptor(EarlyCSEPass(true /* Enable mem-ssa. */)));
     MPM.addPass(createModuleToFunctionPassAdaptor(SimplifyCFGPass()));

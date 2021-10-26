@@ -164,6 +164,10 @@ cl::opt<bool> EnableKernelReplacer(
     "enable-kernel-replacer", cl::init(false), cl::Hidden,
     cl::desc("Enable matrix-multiply replacer pass (implies --enable-matrix)"));
 
+cl::opt<bool> EnableStencilFinder(
+    "enable-stencil-finder", cl::init(false), cl::Hidden,
+    cl::desc("Enable stencil finder pass (implies --enable-matrix)"));
+
 cl::opt<bool> EnableConstraintElimination(
     "enable-constraint-elimination", cl::init(false), cl::Hidden,
     cl::desc(

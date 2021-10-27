@@ -205,6 +205,7 @@
 #include "llvm/Transforms/Scalar/Sink.h"
 #include "llvm/Transforms/Scalar/SpeculateAroundPHIs.h"
 #include "llvm/Transforms/Scalar/SpeculativeExecution.h"
+#include "llvm/Transforms/Scalar/StencilFaRer.h"
 #include "llvm/Transforms/Scalar/StraightLineStrengthReduce.h"
 #include "llvm/Transforms/Scalar/StructurizeCFG.h"
 #include "llvm/Transforms/Scalar/TailRecursionElimination.h"
@@ -318,6 +319,7 @@ extern cl::opt<bool> DisablePreInliner;
 extern cl::opt<int> PreInlineThreshold;
 
 extern cl::opt<bool> EnableKernelReplacer;
+extern cl::opt<bool> EnableStencilFinder;
 
 const PassBuilder::OptimizationLevel PassBuilder::OptimizationLevel::O0 = {
     /*SpeedLevel*/ 0,
@@ -1179,7 +1181,7 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
   if (EnableSyntheticCounts && !PGOOpt)
     MPM.addPass(SyntheticCountsPropagation());
 
-  if (EnableKernelReplacer) {
+  if (EnableKernelReplacer || EnableStencilFinder) {
     MPM.addPass(createModuleToFunctionPassAdaptor(SROA()));
     MPM.addPass(createModuleToFunctionPassAdaptor(EarlyCSEPass(true /* Enable mem-ssa. */)));
     MPM.addPass(createModuleToFunctionPassAdaptor(SimplifyCFGPass()));
@@ -1197,7 +1199,12 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
     MPM.addPass(createModuleToFunctionPassAdaptor(SimplifyCFGPass()));
     MPM.addPass(createModuleToFunctionPassAdaptor(InstCombinePass()));
     MPM.addPass(createModuleToFunctionPassAdaptor(DCEPass()));
-    MPM.addPass(createModuleToFunctionPassAdaptor(GEMMReplacerPass()));
+    if(EnableStencilFinder){
+      MPM.addPass(createModuleToFunctionPassAdaptor(StencilFinderPass()));
+    }
+    if(EnableKernelReplacer){
+      MPM.addPass(createModuleToFunctionPassAdaptor(GEMMReplacerPass()));
+    }
     MPM.addPass(createModuleToFunctionPassAdaptor(createFunctionToLoopPassAdaptor(LoopDeletionPass())));
     MPM.addPass(createModuleToFunctionPassAdaptor(DCEPass()));
     MPM.addPass(createModuleToFunctionPassAdaptor(SimplifyCFGPass()));

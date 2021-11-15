@@ -17,6 +17,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
@@ -223,7 +224,8 @@ PreservedAnalyses StencilFinderPass::run(Function &F,
   F.print(dbgs());
   LoopInfo &LI = FAM.getResult<LoopAnalysis>(F);
   DominatorTree &DT = FAM.getResult<DominatorTreeAnalysis>(F);
-  StencilFaRer::GEMMMatcher::Result GMPR = StencilFaRer::GEMMMatcher::run(F, LI, DT);
+  ScalarEvolution &SE = FAM.getResult<ScalarEvolutionAnalysis>(F);
+  StencilFaRer::GEMMMatcher::Result GMPR = StencilFaRer::GEMMMatcher::run(F, LI, DT, SE);
   bool Changed = runImpl(F, GMPR);
   if (!Changed)
     return PreservedAnalyses::all();

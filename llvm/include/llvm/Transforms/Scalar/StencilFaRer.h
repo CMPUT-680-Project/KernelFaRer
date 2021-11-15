@@ -227,7 +227,7 @@ public:
 struct GEMMMatcher {
 public:
   using Result = std::unique_ptr<SmallVector<std::unique_ptr<Kernel>, 4>>;
-  static Result run(Function &F, LoopInfo &LI, DominatorTree &DT);
+  static Result run(Function &F, LoopInfo &LI, DominatorTree &DT, ScalarEvolution &SE);
 };
 
 /// Checks if GEMM can be replaced with a call to llvm.matrix.multiply.*

@@ -395,6 +395,8 @@ collectLoopsWithDepthOneOrDeeper(LoopInfo &LI,
   }
 }
 
+// TODO: Loop induction variable might no being identified
+
 // A helper function that returns true iff. either the first or the second
 // operand of PHINode PHI matches the pattern described by matcher. If PHI has
 // more than two operand or none operands matched then this function returns
@@ -813,29 +815,43 @@ bool instructionsValid(BasicBlock *BB){
   
 }
 
-bool isStencilAccess(Instruction *Instr, PHINode *InductionVariable,BasicBlock *BB ){
-  return false;
+  // return m_OneOf(
+  //     m_GEP(m_Load(m_GEP(m_Value(Op), m_PHI(PHI2))), m_PHI(PHI1)),
+  //     m_GEP(m_GEP(m_Value(Op), matchPHITimesLD(PHI1, LD)), m_PHI(PHI2)),
+  //     m_GEP(m_GEP(m_Value(Op), m_PHI(PHI2)), matchPHITimesLD(PHI1, LD)),
+  //     m_GEP(m_Value(Op), m_PHI(PHI1), m_PHI(PHI2)),
+  //     m_GEP(m_Value(Op), linearFunctionOfPHI(PHI1, PHI2, LD)));
+
+auto matchStencilAccess(Value *InductionVariableAsValue, Value *&ArrayPointer){
+  return m_OneOf(
+      // Match 1-D stencil access with no offset
+      m_GEP(m_Value(), m_Value(ArrayPointer), m_Specific(InductionVariableAsValue)),
+      // Match 1-D stencil access with a constant offset
+      m_GEP(m_Value(), m_Value(ArrayPointer), m_c_Add(m_ConstantInt(),m_Specific(InductionVariableAsValue)))
+  );
 }
-bool isStencilStore(Instruction &StoreInstr, PHINode *InductionVariable){
-  auto *StoreInstrAsValue = static_cast<Value *>(&StoreInstr);
-  auto *InductionVariableAsValue = static_cast<Value *>(InductionVariable);
+bool isStencilStore(Instruction &StoreInstr, PHINode *InductionVariable, const Loop* L){
+  Value *StoreInstrAsValue = static_cast<Value *>(&StoreInstr);
+  Value *InductionVariableAsValue = static_cast<Value *>(InductionVariable);
+  Value *ArrayPointer = nullptr;
   auto Matcher = m_Store(
     m_Value(), 
-    m_OneOf(
-      // Match 1-D stencil access with no offset
-      // m_GEP(m_Value(), m_ConstantInt(), m_Value()),
-      m_GEP(m_Value(), m_ConstantInt(), m_Specific(InductionVariableAsValue)),
-      // Match 1-D stencil access with a constant offset
-      // m_GEP(m_Value(), m_ConstantInt(), m_Value())
-      m_GEP(m_Value(), m_ConstantInt(), m_c_Add(m_ConstantInt(),m_Specific(InductionVariableAsValue)))
-    )
+    matchStencilAccess(InductionVariableAsValue,ArrayPointer)
   );
-  // m_ConstantInt()
 
-  return match(StoreInstrAsValue, Matcher);
+  return match(StoreInstrAsValue, Matcher) && L->isLoopInvariant(ArrayPointer);
 }
-bool isStencilLoad(Instruction &Instr, PHINode *InductionVariable,BasicBlock *BB ){
-  return false;
+
+// This can probably be simplified
+bool isStencilLoad(Instruction &LoadInstr, PHINode *InductionVariable, const Loop* L){
+  Value *StoreInstrAsValue = static_cast<Value *>(&LoadInstr);
+  Value *InductionVariableAsValue = static_cast<Value *>(InductionVariable);
+  Value *ArrayPointer = nullptr;
+  auto Matcher = m_Load(
+    matchStencilAccess(InductionVariableAsValue,ArrayPointer)
+  );
+
+  return match(StoreInstrAsValue, Matcher) && L->isLoopInvariant(ArrayPointer);
 }
 
 namespace StencilFaRer {
@@ -852,14 +868,25 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
   dbgs() << "Stencil:0\n";
   for (const auto *L : LoopsToProcess) {
     dbgs() << "Stencil:1\n";
-    auto InductionVar = L->getInductionVariable(SE);
-    if (InductionVar == nullptr) {
-      continue;
-    } 
+    L->print(dbgs());
+    PHINode *InductionVar = L->getInductionVariable(SE);
     
-    dbgs() << "Induction:\n";
-    InductionVar->print(dbgs());
     for (auto *BB : L->getBlocks()) {
+      if (InductionVar == nullptr) {
+        auto FirstIntr = BB->begin();
+        dbgs() << "First instruction:\n";
+        FirstIntr->print(dbgs());
+        if (!isa<PHINode>(FirstIntr)){
+          dbgs() << "No induction variable found for the loop\n";
+          break;
+        }
+        dbgs() << "\nAssuming first PHINode coorisponds to the induction variable\n";
+        auto *FirstIntrAsPHINode = static_cast<PHINode *>(&(*FirstIntr));
+        InductionVar = FirstIntrAsPHINode;
+      } 
+      dbgs() << "Induction:\n";
+      InductionVar->print(dbgs());
+
       dbgs() << "Stencil:2\n";
       BB->print(dbgs());
       // dbgs() << "Stencil:3\n";
@@ -874,7 +901,8 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
 
         dbgs() << "Possible stencil found.\n";
         
-        if(!isStencilStore(*Instr,InductionVar)){
+        if(!isStencilStore(*Instr,InductionVar,L)){
+          dbgs() << "Didn't match store.\n";
           continue;
         }
 

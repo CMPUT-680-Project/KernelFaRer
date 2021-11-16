@@ -813,6 +813,31 @@ bool instructionsValid(BasicBlock *BB){
   
 }
 
+bool isStencilAccess(Instruction *Instr, PHINode *InductionVariable,BasicBlock *BB ){
+  return false;
+}
+bool isStencilStore(Instruction &StoreInstr, PHINode *InductionVariable){
+  auto *StoreInstrAsValue = static_cast<Value *>(&StoreInstr);
+  auto *InductionVariableAsValue = static_cast<Value *>(InductionVariable);
+  auto Matcher = m_Store(
+    m_Value(), 
+    m_OneOf(
+      // Match 1-D stencil access with no offset
+      // m_GEP(m_Value(), m_ConstantInt(), m_Value()),
+      m_GEP(m_Value(), m_ConstantInt(), m_Specific(InductionVariableAsValue)),
+      // Match 1-D stencil access with a constant offset
+      // m_GEP(m_Value(), m_ConstantInt(), m_Value())
+      m_GEP(m_Value(), m_ConstantInt(), m_c_Add(m_ConstantInt(),m_Specific(InductionVariableAsValue)))
+    )
+  );
+  // m_ConstantInt()
+
+  return match(StoreInstrAsValue, Matcher);
+}
+bool isStencilLoad(Instruction &Instr, PHINode *InductionVariable,BasicBlock *BB ){
+  return false;
+}
+
 namespace StencilFaRer {
 
 GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
@@ -827,28 +852,34 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
   dbgs() << "Stencil:0\n";
   for (const auto *L : LoopsToProcess) {
     dbgs() << "Stencil:1\n";
-    auto inductionVar = L->getInductionVariable(SE);
-    if (inductionVar == nullptr) {
+    auto InductionVar = L->getInductionVariable(SE);
+    if (InductionVar == nullptr) {
       continue;
     } 
     
     dbgs() << "Induction:\n";
-    inductionVar->print(dbgs());
+    InductionVar->print(dbgs());
     for (auto *BB : L->getBlocks()) {
       dbgs() << "Stencil:2\n";
       BB->print(dbgs());
       // dbgs() << "Stencil:3\n";
-      for (auto Instruction = BB->begin(); Instruction != BB->end(); Instruction++) {
+      for (auto Instr = BB->begin(); Instr != BB->end(); Instr++) {
         // dbgs() << "Stencil:4\n";
-        if (!isa<StoreInst>(Instruction)){
+        if (!isa<StoreInst>(Instr)){
           continue;
         }
         if (!instructionsValid(BB)){
           continue;
         }
-        
+
         dbgs() << "Possible stencil found.\n";
         
+        if(!isStencilStore(*Instr,InductionVar)){
+          continue;
+        }
+
+        dbgs() << "Stencil store found.\n";
+
         // Value *BasePtrToA = nullptr;
         // Value *BasePtrToB = nullptr;
         // Value *BasePtrToC = nullptr;

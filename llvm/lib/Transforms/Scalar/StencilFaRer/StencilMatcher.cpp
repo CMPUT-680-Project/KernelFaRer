@@ -725,6 +725,22 @@ static bool matchSYR2K(Instruction &SeedInst, Value *&IVarI, Value *&IVarJ,
   return IsSYR2K;
 }
 
+inline auto matchStencilStore(const Value *C, Value *&AddLHS, Value *&AddRHS) {
+  return m_Store(m_c_FAdd(m_Value(AddLHS), m_Value(AddRHS)), m_Specific(C)); // Match any store of the result of float addition.
+}
+
+static bool match1DStencil(Instruction &SeedInst) {
+  auto *SeedInstAsValue = static_cast<Value *>(&SeedInst);
+  auto *StoreToC = SeedInst.getOperand(1);
+  Value *AddLHS = nullptr;
+  Value *AddRHS = nullptr;
+  auto StencilStoreMatcher = matchStencilStore(StoreToC, AddLHS, AddRHS); // Match stores to C as result of float addition
+  if (match(SeedInstAsValue, StencilStoreMatcher)) {
+    return true;
+  }
+  return false;
+}
+
 // A Helper function to get leading dimension value. In case V is the RHS of a
 // Shl instruction, V is set to 1 << V. Otherwise V is unchanged.
 void setLeadingDimensionValue0(BasicBlock &FunEntryBB, Loop &L,
@@ -871,6 +887,45 @@ bool isStencilLoad(Instruction &LoadInstr, PHINode *InductionVariable, const Loo
   return match(StoreInstrAsValue, Matcher) && L->isLoopInvariant(ArrayPointer);
 }
 
+inline auto matchBinOp(Value *&BinLHS, Value *&BinRHS) {
+  return m_c_BinOp(m_Value(BinLHS), m_Value(BinRHS));
+}
+
+inline void printExpr(const Value *v) {
+  dbgs() << "printing expr:\n";
+  SmallSetVector<const Value *, 8> WorkQueue;
+  WorkQueue.insert(v);
+  while (!WorkQueue.empty()) {
+    const auto *V = WorkQueue.front();
+    WorkQueue.remove(V);
+
+    Value *BinLHS = nullptr;
+    Value *BinRHS = nullptr;
+    auto BinOpMatcher = matchBinOp(BinLHS, BinRHS);
+    if (match(V, BinOpMatcher)) {
+      dbgs() << "BinOp: "; V->print(dbgs()); dbgs() << "\n";
+      WorkQueue.insert(BinLHS);
+      WorkQueue.insert(BinRHS);
+    } else if (match(V, m_UnOp(m_Value(BinLHS)))) {
+      dbgs() << "UnOp: "; V->print(dbgs()); dbgs() << "\n";
+      WorkQueue.insert(BinLHS);
+    } else { // FIXME: only allow constants and memory accesses
+      dbgs() << "Leaf: "; V->print(dbgs()); dbgs() << "\n";
+    } // TODO: unary operations
+  }
+}
+
+static bool matchStoreExpr(Instruction &SeedInst) {
+  // dbgs() << "matchStoreExpr:\n";
+  // SeedInst.getOperand(1)->print(dbgs()); dbgs() << "\n";
+  // SeedInst.print(dbgs()); dbgs() << "\n";
+  // auto *SeedInstAsValue = static_cast<Value *>(&SeedInst);
+  // auto *StoreToC = SeedInst.getOperand(1);
+  auto *StoreValue = SeedInst.getOperand(0);
+  printExpr(StoreValue); // TODO: Validate the store value as an expression
+  return true;
+}
+
 namespace StencilFaRer {
 
 GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
@@ -916,140 +971,13 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
           continue;
         }
 
-        dbgs() << "Possible stencil found.\n";
-        
         if(!isStencilStore(*Instr,InductionVar,L)){
           dbgs() << "Didn't match store.\n";
           continue;
         }
 
         dbgs() << "Stencil store found.\n";
-
-        // Value *BasePtrToA = nullptr;
-        // Value *BasePtrToB = nullptr;
-        // Value *BasePtrToC = nullptr;
-        // Value *IVarI = nullptr;
-        // Value *IVarJ = nullptr;
-        // Value *IVarK = nullptr;
-        // Value *LDA = nullptr;
-        // Value *LDB = nullptr;
-        // Value *LDC = nullptr;
-        // Value *M = nullptr;
-        // Value *N = nullptr;
-        // Value *K = nullptr;
-        // Value *Alpha = nullptr;
-        // Value *Beta = nullptr;
-        // CBLAS_ORDER ALayout;
-        // CBLAS_ORDER BLayout;
-        // CBLAS_ORDER CLayout;
-        // bool IsCReduced = false;
-        // SmallSetVector<const llvm::Value *, 2> Stores;
-
-        // Kernel::KernelType KT = Kernel::KernelType::UNKNOWN_KERNEL;
-
-        // // Check that the loops for this store intstruction match the
-        // // Syr2k pattern
-        // if (matchSYR2K(*Inst, IVarI, IVarJ, IVarK, BasePtrToA, BasePtrToB,
-        //                BasePtrToC, LDA, LDB, LDC, ALayout, BLayout, CLayout,
-        //                Alpha, Beta, LI) &&
-        //     matchLoopUpperBound(LI, static_cast<PHINode *>(IVarJ), N) &&
-        //     matchLoopUpperBound(LI, static_cast<PHINode *>(IVarK), K)) {
-        //   KT = Kernel::KernelType::SYR2K_KERNEL;
-        //   // Check that the loops for this store intstruction match the
-        //   // Matrix-Multiply pattern
-        // } else if (matchGEMM(*Inst, IVarI, IVarJ, IVarK, BasePtrToA, BasePtrToB,
-        //                      BasePtrToC, LDA, LDB, LDC, ALayout, BLayout,
-        //                      CLayout, LI, Alpha, Beta, IsCReduced) &&
-        //            matchLoopUpperBound(LI, static_cast<PHINode *>(IVarI), M) &&
-        //            matchLoopUpperBound(LI, static_cast<PHINode *>(IVarJ), N) &&
-        //            matchLoopUpperBound(LI, static_cast<PHINode *>(IVarK), K)) {
-        //   KT = Kernel::KernelType::GEMM_KERNEL;
-        // } else
-        //   continue;
-
-        // Loop *OuterLoop = getOuterLoop(LI, IVarI, IVarJ, IVarK);
-        // // Verify that we only have one block we're exiting from.
-        // if (OuterLoop->getExitingBlock() == nullptr) {
-        //   LLVM_DEBUG(dbgs() << "Loop had multiple exiting blocks.\n");
-        //   continue;
-        // }
-
-        // // Verify that we only have one exit block to go to. We won't have
-        // // any way to determine how to get to multiple exits.
-        // if (OuterLoop->getExitBlock() == nullptr) {
-        //   LLVM_DEBUG(dbgs() << "Loop had multiple exit blocks.\n");
-        //   continue;
-        // }
-
-        // // Keep matched LDC for easier matching of initalization stores to
-        // // matrix C
-        // Value *MatchedLDC = LDC;
-
-        // Stores.insert(&*Inst);
-        // collectOtherKernelStoresToC(BasePtrToC, MatchedLDC, IVarI, IVarJ, Alpha,
-        //                             Beta, OuterLoop, *Inst, DT, Stores, IsCReduced);
-
-        // if (KT == Kernel::KernelType::SYR2K_KERNEL) {
-        //   // Note that LD* is determined first by the overall storage order
-        //   // then whether or not the matrix has been transposed.
-        //   if (LDA == nullptr)
-        //     LDA = ALayout == StencilFaRer::RowMajor ? K : N;
-
-        //   // TODO: C = A * B_T in SYR2K so matchMatrixLayout yields layout of
-        //   // B_T
-        //   if (LDB == nullptr)
-        //     LDB = BLayout == StencilFaRer::RowMajor ? N : K;
-
-        //   if (LDC == nullptr)
-        //     LDC = N;
-
-        //   // Matrices constructed from matched values and deduced layouts.
-        //   Matrix MatrixA(*BasePtrToA, ALayout, *LDA, *N, *K, *IVarI, *IVarK);
-        //   Matrix MatrixB(*BasePtrToB, BLayout, *LDB, *N, *K, *IVarI, *IVarK);
-        //   Matrix MatrixC(*BasePtrToC, CLayout, *LDC, *N, *N, *IVarI, *IVarJ);
-        //   ListOfKernels->push_back(
-        //       std::make_unique<SYR2K>(*OuterLoop, *Inst, MatrixA, MatrixB,
-        //                               MatrixC, Stores, Alpha, Beta));
-        // } else {
-        //   // Note that LD* is determined first by the overall storage order
-        //   // then whether or not the matrix has been transposed.
-        //   if (LDA == nullptr) {
-        //     if (CLayout == StencilFaRer::RowMajor)
-        //       LDA = ALayout == CLayout ? K : M;
-        //     else
-        //       LDA = ALayout == CLayout ? M : K;
-        //   } else {
-        //     setLeadingDimensionValue0(F.getEntryBlock(), *OuterLoop, IVarI,
-        //                              IVarK, LDA);
-        //   }
-
-        //   if (LDB == nullptr) {
-        //     if (CLayout == StencilFaRer::RowMajor)
-        //       LDB = BLayout == CLayout ? N : K;
-        //     else
-        //       LDB = BLayout == CLayout ? K : N;
-        //   } else {
-        //     setLeadingDimensionValue0(F.getEntryBlock(), *OuterLoop, IVarK,
-        //                              IVarJ, LDB);
-        //   }
-
-        //   if (LDC == nullptr) {
-        //     if (CLayout == StencilFaRer::RowMajor)
-        //       LDC = N;
-        //     else
-        //       LDC = M;
-        //   } else {
-        //     setLeadingDimensionValue0(F.getEntryBlock(), *OuterLoop, IVarI,
-        //                              IVarJ, LDC);
-        //   }
-
-        //   // Matrices constructed from matched values and deduced layouts.
-        //   Matrix MatrixA(*BasePtrToA, ALayout, *LDA, *M, *K, *IVarI, *IVarK);
-        //   Matrix MatrixB(*BasePtrToB, BLayout, *LDB, *K, *N, *IVarK, *IVarJ);
-        //   Matrix MatrixC(*BasePtrToC, CLayout, *LDC, *M, *N, *IVarI, *IVarJ);
-          // ListOfKernels->push_back(
-          //     std::make_unique<GEMM>(nullptr, *Instruction, nullptr, nullptr,
-          //                            nullptr, nullptr, nullptr, nullptr, nullptr));
+        matchStoreExpr(*Instr);
         }
       }
     }

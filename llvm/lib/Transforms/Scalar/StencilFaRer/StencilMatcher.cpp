@@ -825,9 +825,10 @@ bool instructionsValid(BasicBlock *BB){
 auto matchStencilAccess(Value *InductionVariableAsValue, Value *&ArrayPointer){
   return m_OneOf(
       // Match 1-D stencil access with no offset
-      m_GEP(m_Value(), m_Value(ArrayPointer), m_Specific(InductionVariableAsValue)),
+      m_GEP(m_Value(ArrayPointer), m_Value(), m_Specific(InductionVariableAsValue)),
       // Match 1-D stencil access with a constant offset
-      m_GEP(m_Value(), m_Value(ArrayPointer), m_c_Add(m_ConstantInt(),m_Specific(InductionVariableAsValue)))
+      m_GEP(m_Value(ArrayPointer), m_Value(), m_c_Add(m_ConstantInt(),m_Specific(InductionVariableAsValue))),
+      m_GEP(m_Value(ArrayPointer), m_Value(), m_Sub(m_Specific(InductionVariableAsValue),m_ConstantInt()))
   );
 }
 bool isStencilStore(Instruction &StoreInstr, PHINode *InductionVariable, const Loop* L){
@@ -835,11 +836,27 @@ bool isStencilStore(Instruction &StoreInstr, PHINode *InductionVariable, const L
   Value *InductionVariableAsValue = static_cast<Value *>(InductionVariable);
   Value *ArrayPointer = nullptr;
   auto Matcher = m_Store(
-    m_Value(), 
+    m_Value(), // ! Connect here
     matchStencilAccess(InductionVariableAsValue,ArrayPointer)
   );
 
-  return match(StoreInstrAsValue, Matcher) && L->isLoopInvariant(ArrayPointer);
+  auto matched = match(StoreInstrAsValue, Matcher);
+  auto loopInvariant = L->isLoopInvariant(ArrayPointer);
+
+  if(ArrayPointer!=nullptr){
+    dbgs() << "Array Pointer:";
+    ArrayPointer->print(dbgs());
+    dbgs() << L->isLoopInvariant(ArrayPointer);
+  } else{
+    dbgs() << "Array Pointer: nullptr";
+  }
+
+  dbgs() << "Match:\n";
+  dbgs() << matched;
+  dbgs() << "Invariant:\n";
+  dbgs() << loopInvariant;
+
+  return matched && loopInvariant;
 }
 
 // This can probably be simplified

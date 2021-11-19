@@ -838,7 +838,7 @@ bool instructionsValid(BasicBlock *BB){
   //     m_GEP(m_Value(Op), m_PHI(PHI1), m_PHI(PHI2)),
   //     m_GEP(m_Value(Op), linearFunctionOfPHI(PHI1, PHI2, LD)));
 
-auto matchStencilAccess(Value *InductionVariableAsValue, Value *&ArrayPointer){
+auto matchStencilAccess(const Value *InductionVariableAsValue, Value *&ArrayPointer){
   return m_OneOf(
       // Match 1-D stencil access with no offset
       m_GEP(m_Value(ArrayPointer), m_Value(), m_Specific(InductionVariableAsValue)),
@@ -847,10 +847,48 @@ auto matchStencilAccess(Value *InductionVariableAsValue, Value *&ArrayPointer){
       m_GEP(m_Value(ArrayPointer), m_Value(), m_Sub(m_Specific(InductionVariableAsValue),m_ConstantInt()))
   );
 }
+
+inline auto matchBinOp(Value *&BinLHS, Value *&BinRHS) {
+  return m_c_BinOp(m_Value(BinLHS), m_Value(BinRHS));
+}
+
+inline void printExpr(const Value *v, const Value * i) {
+  dbgs() << "[expr]\n";
+  SmallSetVector<const Value *, 8> WorkQueue;
+  WorkQueue.insert(v);
+  while (!WorkQueue.empty()) {
+    const auto *V = WorkQueue.front();
+    WorkQueue.remove(V);
+
+    Value *BinLHS = nullptr;
+    Value *BinRHS = nullptr;
+    auto BinOpMatcher = matchBinOp(BinLHS, BinRHS);
+    if (match(V, BinOpMatcher)) {
+      dbgs() << "BinOp: "; V->print(dbgs()); dbgs() << "\n";
+      WorkQueue.insert(BinLHS);
+      WorkQueue.insert(BinRHS);
+    } else if (match(V, m_UnOp(m_Value(BinLHS)))) {
+      dbgs() << "UnOp: "; V->print(dbgs()); dbgs() << "\n";
+      WorkQueue.insert(BinLHS);
+    } else if (match(V, m_Constant())) {
+      dbgs() << "Constant (Leaf): "; V->print(dbgs()); dbgs() << "\n";
+    } else if (match(V, m_Load(matchStencilAccess(i, BinLHS)))) {
+      dbgs() << "Stencil Pattern Access (Leaf): "; V->print(dbgs()); dbgs() << " to array "; BinLHS->print(dbgs()); dbgs() << "\n";
+    } else {
+      dbgs() << "Generic Leaf: "; V->print(dbgs()); dbgs() << "\n";
+    } // TODO: if not a load with constant offset, then don't match
+  }
+}
+
 bool isStencilStore(Instruction &StoreInstr, PHINode *InductionVariable, const Loop* L){
   Value *StoreInstrAsValue = static_cast<Value *>(&StoreInstr);
   Value *InductionVariableAsValue = static_cast<Value *>(InductionVariable);
   Value *ArrayPointer = nullptr;
+
+  // auto *StoreValue = SeedInst.getOperand(0);
+  printExpr(StoreInstr.getOperand(0), InductionVariableAsValue);
+
+
   auto Matcher = m_Store(
     m_Value(), // ! Connect here
     matchStencilAccess(InductionVariableAsValue,ArrayPointer)
@@ -885,45 +923,6 @@ bool isStencilLoad(Instruction &LoadInstr, PHINode *InductionVariable, const Loo
   );
 
   return match(StoreInstrAsValue, Matcher) && L->isLoopInvariant(ArrayPointer);
-}
-
-inline auto matchBinOp(Value *&BinLHS, Value *&BinRHS) {
-  return m_c_BinOp(m_Value(BinLHS), m_Value(BinRHS));
-}
-
-inline void printExpr(const Value *v) {
-  dbgs() << "printing expr:\n";
-  SmallSetVector<const Value *, 8> WorkQueue;
-  WorkQueue.insert(v);
-  while (!WorkQueue.empty()) {
-    const auto *V = WorkQueue.front();
-    WorkQueue.remove(V);
-
-    Value *BinLHS = nullptr;
-    Value *BinRHS = nullptr;
-    auto BinOpMatcher = matchBinOp(BinLHS, BinRHS);
-    if (match(V, BinOpMatcher)) {
-      dbgs() << "BinOp: "; V->print(dbgs()); dbgs() << "\n";
-      WorkQueue.insert(BinLHS);
-      WorkQueue.insert(BinRHS);
-    } else if (match(V, m_UnOp(m_Value(BinLHS)))) {
-      dbgs() << "UnOp: "; V->print(dbgs()); dbgs() << "\n";
-      WorkQueue.insert(BinLHS);
-    } else { // FIXME: only allow constants and memory accesses
-      dbgs() << "Leaf: "; V->print(dbgs()); dbgs() << "\n";
-    } // TODO: unary operations
-  }
-}
-
-static bool matchStoreExpr(Instruction &SeedInst) {
-  // dbgs() << "matchStoreExpr:\n";
-  // SeedInst.getOperand(1)->print(dbgs()); dbgs() << "\n";
-  // SeedInst.print(dbgs()); dbgs() << "\n";
-  // auto *SeedInstAsValue = static_cast<Value *>(&SeedInst);
-  // auto *StoreToC = SeedInst.getOperand(1);
-  auto *StoreValue = SeedInst.getOperand(0);
-  printExpr(StoreValue); // TODO: Validate the store value as an expression
-  return true;
 }
 
 namespace StencilFaRer {
@@ -971,13 +970,9 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
           continue;
         }
 
-        if(!isStencilStore(*Instr,InductionVar,L)){
-          dbgs() << "Didn't match store.\n";
-          continue;
+        if(isStencilStore(*Instr,InductionVar,L)){
+          dbgs() << "Found stencil!\n";
         }
-
-        dbgs() << "Stencil store found.\n";
-        matchStoreExpr(*Instr);
         }
       }
     }

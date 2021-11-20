@@ -888,21 +888,32 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
     L->print(dbgs());
     PHINode *InductionVar = L->getInductionVariable(SE);
     
-    for (auto *BB : L->getBlocks()) {
-      if (InductionVar == nullptr) {
-        auto FirstIntr = BB->begin();
-        dbgs() << "First instruction:\n";
-        FirstIntr->print(dbgs());
-        if (!isa<PHINode>(FirstIntr)){
-          dbgs() << "No induction variable found for the loop\n";
-          break;
+    if (InductionVar == nullptr) {
+      dbgs() << "\nInduction variable not detected. Looking for auxilary induction variables...\n";
+      for (auto *BB : L->getBlocks()) {
+        for (auto Instr = BB->begin(); Instr != BB->end(); Instr++) {
+          if (isa<PHINode>(Instr)) {
+            auto Phi = dyn_cast<PHINode>(Instr);
+            if (L->isAuxiliaryInductionVariable(*Phi, SE)) {
+              InductionVar = Phi;
+              break;
+            }
+          }
+          if(InductionVar!=nullptr){
+            break;
+          }
         }
-        dbgs() << "\nAssuming first PHINode coorisponds to the induction variable\n";
-        auto *FirstIntrAsPHINode = static_cast<PHINode *>(&(*FirstIntr));
-        InductionVar = FirstIntrAsPHINode;
-      } 
-      dbgs() << "Induction:\n";
-      InductionVar->print(dbgs());
+        if(InductionVar==nullptr){
+          dbgs() << "Could not find auxilary induction variable: ";
+          continue;
+        }
+      }
+    } 
+
+    dbgs() << "Induction:\n";
+    InductionVar->print(dbgs());
+
+    for (auto *BB : L->getBlocks()) {
 
       dbgs() << "Stencil:2\n";
       BB->print(dbgs());

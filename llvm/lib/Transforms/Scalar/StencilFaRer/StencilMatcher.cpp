@@ -889,11 +889,17 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
     PHINode *InductionVar = L->getInductionVariable(SE);
     
     if (InductionVar == nullptr) {
+      // ! TODO: Maybe we might need to consider all aux induction vars (not just the first)
       dbgs() << "\nInduction variable not detected. Looking for auxilary induction variables...\n";
+      if(L->getLoopPreheader()==nullptr){
+        dbgs() << "Loop missing preheader. This is required to initalize/detect induction var. Skipping loop";
+        continue;
+      }
       for (auto *BB : L->getBlocks()) {
         for (auto Instr = BB->begin(); Instr != BB->end(); Instr++) {
           if (isa<PHINode>(Instr)) {
             auto Phi = dyn_cast<PHINode>(Instr);
+            Phi->print(dbgs());
             if (L->isAuxiliaryInductionVariable(*Phi, SE)) {
               InductionVar = Phi;
               break;

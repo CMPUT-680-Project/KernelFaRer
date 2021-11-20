@@ -27,6 +27,7 @@
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar/StencilFaRer.h"
+#include <vector>
 
 using namespace llvm;
 using namespace llvm::PatternMatch;
@@ -822,8 +823,11 @@ bool instructionsValid(BasicBlock *BB){
   //     m_GEP(m_Value(Op), m_PHI(PHI1), m_PHI(PHI2)),
   //     m_GEP(m_Value(Op), linearFunctionOfPHI(PHI1, PHI2, LD)));
 
-auto matchStencilAccess(Value *InductionVariableAsValue, Value *&ArrayPointer){
+auto matchStencilAccess(Value *InductionVariableAsValue, Value *&ArrayPointer, int depth=1){
   return m_OneOf(
+      // TODO: Recurse to depth with soemthing like this: (depth based on loop vector length)
+      //     m_GEP(<recurse<matchPHITimesLD(induction[0], LD)>, m_PHI(induction[1])),
+      //     m_GEP(<recurse<induction[0]>), matchPHITimesLD(induction[1], LD)),
       // Match 1-D stencil access with no offset
       m_GEP(m_Value(ArrayPointer), m_Value(), m_Specific(InductionVariableAsValue)),
       // Match 1-D stencil access with a constant offset
@@ -831,7 +835,7 @@ auto matchStencilAccess(Value *InductionVariableAsValue, Value *&ArrayPointer){
       m_GEP(m_Value(ArrayPointer), m_Value(), m_Sub(m_Specific(InductionVariableAsValue),m_ConstantInt()))
   );
 }
-bool isStencilStore(Instruction &StoreInstr, PHINode *InductionVariable, const Loop* L){
+bool isStencilStore(Instruction &StoreInstr, std::vector<PHINode*> InductionVariables, std::vector<const Loop*> Loops){
   Value *StoreInstrAsValue = static_cast<Value *>(&StoreInstr);
   Value *InductionVariableAsValue = static_cast<Value *>(InductionVariable);
   Value *ArrayPointer = nullptr;
@@ -886,24 +890,7 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
   for (const auto *L : LoopsToProcess) {
     dbgs() << "Stencil:1\n";
     L->print(dbgs());
-    PHINode *InductionVar = L->getInductionVariable(SE);
-    
     for (auto *BB : L->getBlocks()) {
-      if (InductionVar == nullptr) {
-        auto FirstIntr = BB->begin();
-        dbgs() << "First instruction:\n";
-        FirstIntr->print(dbgs());
-        if (!isa<PHINode>(FirstIntr)){
-          dbgs() << "No induction variable found for the loop\n";
-          break;
-        }
-        dbgs() << "\nAssuming first PHINode coorisponds to the induction variable\n";
-        auto *FirstIntrAsPHINode = static_cast<PHINode *>(&(*FirstIntr));
-        InductionVar = FirstIntrAsPHINode;
-      } 
-      dbgs() << "Induction:\n";
-      InductionVar->print(dbgs());
-
       dbgs() << "Stencil:2\n";
       BB->print(dbgs());
       // dbgs() << "Stencil:3\n";
@@ -915,6 +902,30 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
         if (!instructionsValid(BB)){
           continue;
         }
+
+        // Generate find induction variable for current and parent loops
+        std::vector<const Loop*> Loops = {};
+        std::vector<PHINode*> InductionVariables = {};
+        const Loop *CurrentLoop = L;
+        do{
+          PHINode *InductionVar = CurrentLoop->getInductionVariable(SE);
+          if (InductionVar == nullptr) {
+            auto FirstIntr = BB->begin();
+            dbgs() << "First instruction:\n";
+            FirstIntr->print(dbgs());
+            if (!isa<PHINode>(FirstIntr)){
+              dbgs() << "No induction variable found for the loop\n";
+              break;
+            }
+            dbgs() << "\nAssuming first PHINode coorisponds to the induction variable\n";
+            InductionVar = static_cast<PHINode *>(&(*FirstIntr));
+            InductionVariables.push_back(InductionVar);
+            Loops.push_back(CurrentLoop);
+            CurrentLoop = CurrentLoop->getParentLoop();
+          } 
+          dbgs() << "Induction:\n";
+          InductionVar->print(dbgs());
+        } while(false);
 
         dbgs() << "Possible stencil found.\n";
         

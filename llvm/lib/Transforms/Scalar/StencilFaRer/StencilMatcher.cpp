@@ -939,9 +939,10 @@ PHINode *getInductionVariable(const Loop *L,ScalarEvolution &SE){
       for (auto Instr = BB->begin(); Instr != BB->end(); Instr++) {
         if (isa<PHINode>(Instr)) {
           auto Phi = dyn_cast<PHINode>(Instr);
+          // ! I think this is on stack maybe pass in pointer
           Phi->print(dbgs());
           if (L->isAuxiliaryInductionVariable(*Phi, SE)) {
-            return Phi;
+            return &*Phi;
           }
         }
       }
@@ -951,6 +952,7 @@ PHINode *getInductionVariable(const Loop *L,ScalarEvolution &SE){
       return nullptr;
     }
   } 
+  return InductionVar;
 }
 
 namespace StencilFaRer {
@@ -969,12 +971,12 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
     dbgs() << "Stencil:1\n";
     L->print(dbgs());
 
-    dbgs() << "Induction:\n";
     PHINode* InductionVar = getInductionVariable(L,SE);
     if(InductionVar==nullptr){
       dbgs() << "Induction variable not found. Skipping loop\n";
       continue;
     }
+    dbgs() << "Induction:\n";
     InductionVar->print(dbgs());
 
     for (auto *BB : L->getBlocks()) {
@@ -991,12 +993,26 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
           continue;
         }
 
+        std::vector<const Loop*> Loops = {L};
+        std::vector<PHINode*> InductionVariables = {InductionVar};
+
+        const Loop* NextLoop = L->getParentLoop();
+        while(NextLoop!=nullptr){
+          PHINode* NextInductionVar = getInductionVariable(NextLoop,SE);
+          if(NextInductionVar==nullptr){
+            break;
+          }
+          Loops.push_back(NextLoop);
+          InductionVariables.push_back(NextInductionVar);
+          NextLoop = NextLoop->getParentLoop();
+        }
+
         if(isStencilStore(*Instr,InductionVar,L)){
           dbgs() << "Found stencil!\n";
         }
-        }
       }
     }
-    return ListOfKernels;
   }
+  return ListOfKernels;
 }
+} // namespace StencilFaRer

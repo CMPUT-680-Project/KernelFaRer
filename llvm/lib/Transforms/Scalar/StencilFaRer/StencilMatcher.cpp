@@ -925,6 +925,34 @@ bool isStencilLoad(Instruction &LoadInstr, PHINode *InductionVariable, const Loo
   return match(StoreInstrAsValue, Matcher) && L->isLoopInvariant(ArrayPointer);
 }
 
+PHINode *getInductionVariable(const Loop *L,ScalarEvolution &SE){
+  PHINode *InductionVar = L->getInductionVariable(SE);
+  
+  if (InductionVar == nullptr) {
+    // ! TODO: Maybe we might need to consider all aux induction vars (not just the first)
+    dbgs() << "\nInduction variable not detected. Looking for auxilary induction variables...\n";
+    if(L->getLoopPreheader()==nullptr){
+      dbgs() << "Loop missing preheader. This is required to initalize/detect induction var. Skipping loop";
+      return nullptr;
+    }
+    for (auto *BB : L->getBlocks()) {
+      for (auto Instr = BB->begin(); Instr != BB->end(); Instr++) {
+        if (isa<PHINode>(Instr)) {
+          auto Phi = dyn_cast<PHINode>(Instr);
+          Phi->print(dbgs());
+          if (L->isAuxiliaryInductionVariable(*Phi, SE)) {
+            return Phi;
+          }
+        }
+      }
+    }
+    if(InductionVar==nullptr){
+      dbgs() << "Could not find auxilary induction variable: ";
+      return nullptr;
+    }
+  } 
+}
+
 namespace StencilFaRer {
 
 GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
@@ -940,37 +968,13 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
   for (const auto *L : LoopsToProcess) {
     dbgs() << "Stencil:1\n";
     L->print(dbgs());
-    PHINode *InductionVar = L->getInductionVariable(SE);
-    
-    if (InductionVar == nullptr) {
-      // ! TODO: Maybe we might need to consider all aux induction vars (not just the first)
-      dbgs() << "\nInduction variable not detected. Looking for auxilary induction variables...\n";
-      if(L->getLoopPreheader()==nullptr){
-        dbgs() << "Loop missing preheader. This is required to initalize/detect induction var. Skipping loop";
-        continue;
-      }
-      for (auto *BB : L->getBlocks()) {
-        for (auto Instr = BB->begin(); Instr != BB->end(); Instr++) {
-          if (isa<PHINode>(Instr)) {
-            auto Phi = dyn_cast<PHINode>(Instr);
-            Phi->print(dbgs());
-            if (L->isAuxiliaryInductionVariable(*Phi, SE)) {
-              InductionVar = Phi;
-              break;
-            }
-          }
-          if(InductionVar!=nullptr){
-            break;
-          }
-        }
-        if(InductionVar==nullptr){
-          dbgs() << "Could not find auxilary induction variable: ";
-          continue;
-        }
-      }
-    } 
 
     dbgs() << "Induction:\n";
+    PHINode* InductionVar = getInductionVariable(L,SE);
+    if(InductionVar==nullptr){
+      dbgs() << "Induction variable not found. Skipping loop\n";
+      continue;
+    }
     InductionVar->print(dbgs());
 
     for (auto *BB : L->getBlocks()) {

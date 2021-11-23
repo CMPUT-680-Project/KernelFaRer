@@ -481,10 +481,23 @@ static bool matchLoopUpperBound(LoopInfo &LI, PHINode *IndVar, Value *&UBound) {
   return false;
 }
 
+// A helper function that tries to find the lower bound (LBound) of a loop
+// associated with the induction variable (IndVar). If the upper bound is found
+// and is a constant, then this function returns true and sets the incoming
+// argument LBound to whichever value the loop associated with IndVar has.
+// Otherwise, this function returns false and sets LBound to nullptr.
+// If the incoming PHINode is a Phi(true, false) as in tripcount == 2 loops,
+// the bound is not matched.
+static bool matchLoopLowerBound(LoopInfo &LI, PHINode *IndVar, Value *&LBound) {
+  // ! TODO: match lower bound
+  LBound = nullptr;
+  return true;
+}
+
 // A helper function that returns the outer loop associated with one of the
 // induction variables I, J, and K.
 static Loop *getOuterLoop(LoopInfo &LI, Value *const &I, Value *const &J,
-                          Value *const &K) {
+                          Value *const &K) { // ! TODO: Generalize to any number of induction vars
   auto *A = LI.getLoopFor(static_cast<const PHINode *>(I)->getParent());
   auto *B = LI.getLoopFor(static_cast<const PHINode *>(J)->getParent());
   auto *C = LI.getLoopFor(static_cast<const PHINode *>(K)->getParent());
@@ -805,214 +818,138 @@ static void collectOtherKernelStoresToC(
   }
 }
 
-bool instructionsValid(BasicBlock *BB){
-  // May want to adjust this
-  if(BB->getInstList().size()<3){
-    return false;
-  }
-  for (auto Inst = BB->begin(); Inst != BB->end(); Inst++) {
-    if (
-        !isa<StoreInst>(Inst) && 
-        !isa<LoadInst>(Inst) &&
-        !isa<BinaryOperator>(Inst) &&
-        !isa<UnaryInstruction>(Inst) &&
-        !isa<PHINode>(Inst) &&
-        !isa<GetElementPtrInst>(Inst) &&
-        !isa<CmpInst>(Inst) &&
-        !isa<CallBase>(Inst) && // ! This might need to be futher restricted
-        !isa<BranchInst>(Inst) // ! This needs to be futher restricted
-        ){
-        LLVM_DEBUG(dbgs() << "Loop contains:\n");
-        Inst->print(dbgs());
-      return false;
-    }
-  }
-  return true;
-  
+inline auto scaledPHIOrPHI(PHINode *&PHI) {
+  return m_CombineOr(
+      m_PHI(PHI),
+      m_OneOf(m_c_Mul(m_PHI(PHI), m_ConstantInt()),
+                m_Shl(m_PHI(PHI), m_ConstantInt()),
+                m_Shr(m_PHI(PHI), m_ConstantInt())));
 }
 
-  // return m_OneOf(
-  //     m_GEP(m_Load(m_GEP(m_Value(Op), m_PHI(PHI2))), m_PHI(PHI1)),
-  //     m_GEP(m_GEP(m_Value(Op), matchPHITimesLD(PHI1, LD)), m_PHI(PHI2)),
-  //     m_GEP(m_GEP(m_Value(Op), m_PHI(PHI2)), matchPHITimesLD(PHI1, LD)),
-  //     m_GEP(m_Value(Op), m_PHI(PHI1), m_PHI(PHI2)),
-  //     m_GEP(m_Value(Op), linearFunctionOfPHI(PHI1, PHI2, LD)));
-
-auto matchStencilAccess(const Value *InductionVariableAsValue, Value *&ArrayPointer){
+inline auto linearFunctionOf1PHI(PHINode *&PHI) { // ! TODO: Generalize to many PHIs. Worklist algorithm again?
   return m_OneOf(
-      // Match 1-D stencil access with no offset
-      m_GEP(m_Value(ArrayPointer), m_Value(), m_Specific(InductionVariableAsValue)),
-      // Match 1-D stencil access with a constant offset
-      m_GEP(m_Value(ArrayPointer), m_Value(), m_c_Add(m_ConstantInt(),m_Specific(InductionVariableAsValue))),
-      m_GEP(m_Value(ArrayPointer), m_Value(), m_Sub(m_Specific(InductionVariableAsValue),m_ConstantInt()))
-  );
+      scaledPHIOrPHI(PHI),
+      m_c_Add(scaledPHIOrPHI(PHI), m_ConstantInt()),
+      m_c_Or(scaledPHIOrPHI(PHI), m_SpecificInt(1)));
 }
 
-inline auto matchBinOp(Value *&BinLHS, Value *&BinRHS) {
-  return m_c_BinOp(m_Value(BinLHS), m_Value(BinRHS));
+inline auto matchPtrOpAndInductionVariable(Value *&Op, PHINode *&PHI) {
+  return m_GEP(m_Value(Op), linearFunctionOf1PHI(PHI));
 }
 
-inline void printExpr(const Value *v, const Value * i) {
+inline auto matchStencilLoad(Value *&PtrOp, PHINode *&Idx) {
+  return m_Load(matchPtrOpAndInductionVariable(PtrOp, Idx));
+}
+
+// PtrOp: stencil pattern array
+// Idx: induction variable
+inline bool matchExpr(const Value * seed, Value *&PtrOp, PHINode *&Idx) {
   dbgs() << "[expr]\n";
   SmallSetVector<const Value *, 8> WorkQueue;
-  WorkQueue.insert(v);
+  WorkQueue.insert(seed);
+
+  Value *lastPtrOp = nullptr;
+  Value *lastIdx = nullptr;
+
   while (!WorkQueue.empty()) {
-    const auto *V = WorkQueue.front();
-    WorkQueue.remove(V);
+    const auto *v = WorkQueue.front();
+    WorkQueue.remove(v);
 
     Value *BinLHS = nullptr;
     Value *BinRHS = nullptr;
-    auto BinOpMatcher = matchBinOp(BinLHS, BinRHS);
-    if (match(V, BinOpMatcher)) {
-      dbgs() << "BinOp: "; V->print(dbgs()); dbgs() << "\n";
+    Value *UnArg = nullptr;
+
+    if (match(v, m_c_BinOp(m_Value(BinLHS), m_Value(BinRHS)))) {
+      dbgs() << "BinOp: "; v->print(dbgs()); dbgs() << "\n";
       WorkQueue.insert(BinLHS);
       WorkQueue.insert(BinRHS);
-    } else if (match(V, m_UnOp(m_Value(BinLHS)))) {
-      dbgs() << "UnOp: "; V->print(dbgs()); dbgs() << "\n";
-      WorkQueue.insert(BinLHS);
-    } else if (match(V, m_Constant())) {
-      dbgs() << "Constant (Leaf): "; V->print(dbgs()); dbgs() << "\n";
-    } else if (match(V, m_Load(matchStencilAccess(i, BinLHS)))) {
-      dbgs() << "Stencil Pattern Access (Leaf): "; V->print(dbgs()); dbgs() << " to array "; BinLHS->print(dbgs()); dbgs() << "\n";
-    } else {
-      dbgs() << "Generic Leaf: "; V->print(dbgs()); dbgs() << "\n";
-    } // TODO: if not a load with constant offset, then don't match
-  }
-}
 
-bool isStencilStore(Instruction &StoreInstr, PHINode *InductionVariable, const Loop* L){
-  Value *StoreInstrAsValue = static_cast<Value *>(&StoreInstr);
-  Value *InductionVariableAsValue = static_cast<Value *>(InductionVariable);
-  Value *ArrayPointer = nullptr;
+    } else if (match(v, m_UnOp(m_Value(UnArg)))) {
+      dbgs() << "UnOp: "; v->print(dbgs()); dbgs() << "\n";
+      WorkQueue.insert(UnArg);
 
-  // auto *StoreValue = SeedInst.getOperand(0);
-  printExpr(StoreInstr.getOperand(0), InductionVariableAsValue);
+    } else if (match(v, m_Constant())) {
+      dbgs() << "Constant (Leaf): "; v->print(dbgs()); dbgs() << "\n";
 
-
-  auto Matcher = m_Store(
-    m_Value(), // ! Connect here
-    matchStencilAccess(InductionVariableAsValue,ArrayPointer)
-  );
-
-  auto matched = match(StoreInstrAsValue, Matcher);
-  auto loopInvariant = L->isLoopInvariant(ArrayPointer);
-
-  if(ArrayPointer!=nullptr){
-    dbgs() << "Array Pointer:";
-    ArrayPointer->print(dbgs());
-    dbgs() << L->isLoopInvariant(ArrayPointer);
-  } else{
-    dbgs() << "Array Pointer: nullptr";
-  }
-
-  dbgs() << "Match:\n";
-  dbgs() << matched;
-  dbgs() << "Invariant:\n";
-  dbgs() << loopInvariant;
-
-  return matched && loopInvariant;
-}
-
-// This can probably be simplified
-bool isStencilLoad(Instruction &LoadInstr, PHINode *InductionVariable, const Loop* L){
-  Value *StoreInstrAsValue = static_cast<Value *>(&LoadInstr);
-  Value *InductionVariableAsValue = static_cast<Value *>(InductionVariable);
-  Value *ArrayPointer = nullptr;
-  auto Matcher = m_Load(
-    matchStencilAccess(InductionVariableAsValue,ArrayPointer)
-  );
-
-  return match(StoreInstrAsValue, Matcher) && L->isLoopInvariant(ArrayPointer);
-}
-
-PHINode *getInductionVariable(const Loop *L,ScalarEvolution &SE){
-  PHINode *InductionVar = L->getInductionVariable(SE);
-  
-  if (InductionVar == nullptr) {
-    // ! TODO: Maybe we might need to consider all aux induction vars (not just the first)
-    dbgs() << "\nInduction variable not detected. Looking for auxilary induction variables...\n";
-    if(L->getLoopPreheader()==nullptr){
-      dbgs() << "Loop missing preheader. This is required to initalize/detect induction var. Skipping loop";
-      return nullptr;
-    }
-    for (auto *BB : L->getBlocks()) {
-      for (auto Instr = BB->begin(); Instr != BB->end(); Instr++) {
-        if (isa<PHINode>(Instr)) {
-          auto Phi = dyn_cast<PHINode>(Instr);
-          // ! I think this is on stack maybe pass in pointer
-          Phi->print(dbgs());
-          if (L->isAuxiliaryInductionVariable(*Phi, SE)) {
-            return &*Phi;
-          }
-        }
+    } else if (match(v, matchStencilLoad(PtrOp, Idx))) {
+      if (lastPtrOp && lastPtrOp != PtrOp) {
+        dbgs() << "! Multiple arrays being accessed.\n";
+        return false;
       }
+      if (lastIdx && lastIdx != Idx) {
+        dbgs() << "! Multiple induction variables.\n";
+        return false;
+      }
+      dbgs() << "Stencil Pattern Access (Leaf) to array "; PtrOp->print(dbgs()); 
+      dbgs() << " | PHI Node: "; Idx->print(dbgs()); 
+      dbgs() << " | "; v->print(dbgs()); 
+      dbgs() << "\n";
+      lastPtrOp = PtrOp;
+      lastIdx = Idx;
+
+    } else {
+      dbgs() << "Generic Leaf: "; v->print(dbgs()); dbgs() << "\n";
+
     }
-    if(InductionVar==nullptr){
-      dbgs() << "Could not find auxilary induction variable: ";
-      return nullptr;
-    }
-  } 
-  return InductionVar;
+  }
+  dbgs() << "Done reading expr!\n";
+  return true;
+}
+
+static bool matchStencil(Instruction &SeedInst, Value *&IVarI, 
+                      Value *&BasePtrToA, Value *&BasePtrToB, LoopInfo &LI) {
+  // auto *SeedInstAsValue = static_cast<Value *>(&SeedInst); // B[] = some func of A[]
+  PHINode *PHI = nullptr;
+  matchExpr(SeedInst.getOperand(0), BasePtrToA, PHI);
+  return true;
 }
 
 namespace StencilFaRer {
 
 GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
                                      DominatorTree &DT, ScalarEvolution &SE) {
-  dbgs() << "Starting stencil matching...\n";
-  auto ListOfKernels = std::make_unique<SmallVector<std::unique_ptr<Kernel>, 4>>();
+  auto ListOfKernels = 
+      std::make_unique<SmallVector<std::unique_ptr<Kernel>, 4>>();
   SmallSetVector<const Loop *, 8> LoopsToProcess;
-  // ! TODO: Change depth
-  dbgs() << "Loop info:\n";
-  LI.print(dbgs());
   collectLoopsWithDepthOneOrDeeper(LI, LoopsToProcess);
-  dbgs() << "Stencil:0\n";
   for (const auto *L : LoopsToProcess) {
-    dbgs() << "Stencil:1\n";
-    L->print(dbgs());
-
-    PHINode* InductionVar = getInductionVariable(L,SE);
-    if(InductionVar==nullptr){
-      dbgs() << "Induction variable not found. Skipping loop\n";
-      continue;
-    }
-    dbgs() << "Induction:\n";
-    InductionVar->print(dbgs());
-
     for (auto *BB : L->getBlocks()) {
+      for (auto Inst = BB->begin(); Inst != BB->end(); Inst++) {
+        if (!isa<StoreInst>(Inst))
+          continue;
 
-      dbgs() << "Stencil:2\n";
-      BB->print(dbgs());
-      // dbgs() << "Stencil:3\n";
-      for (auto Instr = BB->begin(); Instr != BB->end(); Instr++) {
-        // dbgs() << "Stencil:4\n";
-        if (!isa<StoreInst>(Instr)){
+        Value *BasePtrToA = nullptr;
+        Value *BasePtrToB = nullptr;
+        Value *IVarI = nullptr;
+        Value *ILBound = nullptr; // Lower bound for induction variable I
+        Value *IUBound = nullptr; // Upper bound for induction variable I
+        SmallSetVector<const llvm::Value *, 2> Stores;
+
+        if (matchStencil(*Inst, IVarI, BasePtrToA, BasePtrToB, LI)) {
+            // matchLoopLowerBound(LI, static_cast<PHINode *>(IVarI), ILBound) &&
+            // matchLoopUpperBound(LI, static_cast<PHINode *>(IVarI), IUBound)) {
+            dbgs() << "Found a stencil!\n";
+        } else
+          continue;
+
+        const Loop *OuterLoop = L; // getOuterLoop(LI, IVarI, IVarJ, IVarK); // ! TODO: generalize to deeper loops
+        // Verify that we only have one block we're exiting from.
+        if (OuterLoop->getExitingBlock() == nullptr) {
+          LLVM_DEBUG(dbgs() << "Loop had multiple exiting blocks.\n");
           continue;
         }
-        if (!instructionsValid(BB)){
+
+        // Verify that we only have one exit block to go to. We won't have
+        // any way to determine how to get to multiple exits.
+        if (OuterLoop->getExitBlock() == nullptr) {
+          LLVM_DEBUG(dbgs() << "Loop had multiple exit blocks.\n");
           continue;
         }
 
-        std::vector<const Loop*> Loops = {L};
-        std::vector<PHINode*> InductionVariables = {InductionVar};
-
-        const Loop* NextLoop = L->getParentLoop();
-        while(NextLoop!=nullptr){
-          PHINode* NextInductionVar = getInductionVariable(NextLoop,SE);
-          if(NextInductionVar==nullptr){
-            break;
-          }
-          Loops.push_back(NextLoop);
-          InductionVariables.push_back(NextInductionVar);
-          NextLoop = NextLoop->getParentLoop();
-        }
-
-        if(isStencilStore(*Instr,InductionVar,L)){
-          dbgs() << "Found stencil!\n";
-        }
       }
     }
   }
   return ListOfKernels;
 }
+
 } // namespace StencilFaRer

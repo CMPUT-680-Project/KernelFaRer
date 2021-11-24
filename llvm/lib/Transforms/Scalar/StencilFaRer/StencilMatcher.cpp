@@ -897,6 +897,10 @@ inline bool matchExpr(const Value * seed, Value *&PtrOp, PHINode *&Idx) {
 }
 
 bool phiMatchesLoop(PHINode *phi, const Loop *L, ScalarEvolution &SE) {
+  if(phi==nullptr){
+    dbgs() << "phi is nullptr. This should not happen\n";
+    return false;
+  }
   if(L->getLoopPreheader()==nullptr){
     dbgs() << "Loop missing preheader. This is required to initalize/detect induction var";
     return false;

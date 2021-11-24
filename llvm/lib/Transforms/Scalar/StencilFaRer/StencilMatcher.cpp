@@ -909,8 +909,11 @@ static bool matchStencil(Instruction &SeedInst, Value *&IVarI,
                       const Loop *L, ScalarEvolution &SE) {
   // auto *SeedInstAsValue = static_cast<Value *>(&SeedInst); // B[] = some func of A[]
   PHINode *PHI = nullptr;
-  matchExpr(SeedInst.getOperand(0), BasePtrToA, PHI);
-
+  bool matched = matchExpr(SeedInst.getOperand(0), BasePtrToA, PHI);
+  if (!matched) {
+    dbgs() << "! Failed to match expr.\n";
+    return false;
+  }
   return phiMatchesLoop(PHI,L,SE);
 }
 

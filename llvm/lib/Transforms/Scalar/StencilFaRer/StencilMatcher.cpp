@@ -896,12 +896,22 @@ inline bool matchExpr(const Value * seed, Value *&PtrOp, PHINode *&Idx) {
   return true;
 }
 
+bool phiMatchesLoop(PHINode *phi, const Loop *L, ScalarEvolution &SE) {
+  if(L->getLoopPreheader()==nullptr){
+    dbgs() << "Loop missing preheader. This is required to initalize/detect induction var";
+    return false;
+  }
+  return L->isAuxiliaryInductionVariable(*phi, SE);
+}
+
 static bool matchStencil(Instruction &SeedInst, Value *&IVarI, 
-                      Value *&BasePtrToA, Value *&BasePtrToB, LoopInfo &LI) {
+                      Value *&BasePtrToA, Value *&BasePtrToB, LoopInfo &LI,
+                      const Loop *L, ScalarEvolution &SE) {
   // auto *SeedInstAsValue = static_cast<Value *>(&SeedInst); // B[] = some func of A[]
   PHINode *PHI = nullptr;
   matchExpr(SeedInst.getOperand(0), BasePtrToA, PHI);
-  return true;
+
+  return phiMatchesLoop(PHI,L,SE);
 }
 
 namespace StencilFaRer {
@@ -925,7 +935,7 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
         Value *IUBound = nullptr; // Upper bound for induction variable I
         SmallSetVector<const llvm::Value *, 2> Stores;
 
-        if (matchStencil(*Inst, IVarI, BasePtrToA, BasePtrToB, LI)) {
+        if (matchStencil(*Inst, IVarI, BasePtrToA, BasePtrToB, LI, L, SE)) {
             // matchLoopLowerBound(LI, static_cast<PHINode *>(IVarI), ILBound) &&
             // matchLoopUpperBound(LI, static_cast<PHINode *>(IVarI), IUBound)) {
             dbgs() << "Found a stencil!\n";

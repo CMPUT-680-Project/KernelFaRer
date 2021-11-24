@@ -838,19 +838,106 @@ bool instructionsValid(BasicBlock *BB){
   //     m_GEP(m_Value(Op), m_PHI(PHI1), m_PHI(PHI2)),
   //     m_GEP(m_Value(Op), linearFunctionOfPHI(PHI1, PHI2, LD)));
 
-auto matchStencilAccess(const Value *InductionVariableAsValue, Value *&ArrayPointer){
+auto match1DStencilAccess(const Value *InductionVariableAsValue, Value *&ArrayPointer){
   return m_OneOf(
       // Match 1-D stencil access with no offset
-      m_GEP(m_Value(ArrayPointer), m_Value(), m_Specific(InductionVariableAsValue)),
+      m_GEP(m_Value(ArrayPointer), m_Specific(InductionVariableAsValue)),
       // Match 1-D stencil access with a constant offset
-      m_GEP(m_Value(ArrayPointer), m_Value(), m_c_Add(m_ConstantInt(),m_Specific(InductionVariableAsValue))),
-      m_GEP(m_Value(ArrayPointer), m_Value(), m_Sub(m_Specific(InductionVariableAsValue),m_ConstantInt()))
+      m_GEP(m_Value(ArrayPointer), m_c_Add(m_ConstantInt(),m_Specific(InductionVariableAsValue))),
+      m_GEP(m_Value(ArrayPointer), m_Sub(m_Specific(InductionVariableAsValue),m_ConstantInt()))
   );
 }
+
+
+// std::vector<const Loop*> Loops = {L};
+// std::vector<PHINode*> InductionVariables = {InductionVar};
+// auto matchStencilAccessRecursive(std::vector<Value*> &InductionVariablesAsValue, std::vector<Value*> &ArrayPointer){
+//   if (size==1){
+//     return m_OneOf(
+//         // Match 1-D stencil access with no offset
+//         m_GEP(m_Value(ArrayPointer[0]), m_Value(), m_Value(InductionVariablesAsValue[0])),
+//         // Match 1-D stencil access with a constant offset
+//         m_GEP(m_Value(ArrayPointer[0]), m_Value(), m_c_Add(m_ConstantInt(),m_Value(InductionVariablesAsValue[0]))),
+//         m_GEP(m_Value(ArrayPointer[0]), m_Value(), m_Sub(m_Value(InductionVariablesAsValue[0]),m_ConstantInt())),
+//         m_GEP(m_Value(ArrayPointer[0]), m_Value(), m_Sub(m_Value(InductionVariablesAsValue[0]),m_ConstantInt())),
+//     );
+//   }
+    // ! TODO: This is quite inefficent but is easy to implement
+  // return m_OneOf(
+  //     // Match N-D stencil access with no offset
+  //     m_GEP(matchStencilAccessRecursive(InductionVariablesAsValue,ArrayPointer,size-1), m_Value(), m_Value(InductionVariablesAsValue[0])),
+  //     // Match 1-D stencil access with a constant offset
+  //     m_GEP(matchStencilAccessRecursive(InductionVariablesAsValue,ArrayPointer,size-1), m_Value(), m_c_Add(m_ConstantInt(),m_Value(InductionVariablesAsValue[0]))),
+  //     m_GEP(matchStencilAccessRecursive(InductionVariablesAsValue,ArrayPointer,size-1), m_Value(), m_Sub(m_Value(InductionVariablesAsValue[0]),m_ConstantInt())),
+  //     // Match N-D stencil access with a constant offset
+  //     matchStencilAccessRecursive(InductionVariablesAsValue,ArrayPointer,size-1)
+  // );
+// }
+
+struct StencilAccess_match {
+  std::vector<PHINode*> *InductionVariablesAsValue;
+  Value** ArrayPointer;
+  int size;
+
+  StencilAccess_match(std::vector<PHINode*> *InductionVariablesAsValue, Value** ArrayPointer, int size=-1){
+    if(size==-1){
+      size = InductionVariablesAsValue->size();
+    }
+    this->InductionVariablesAsValue = InductionVariablesAsValue;
+    this->ArrayPointer = ArrayPointer;
+    this->size = size;
+  }
+
+  template <typename OpTy> bool match(OpTy *V) {
+    dbgs() << "StencilAccess_match size: ";
+    dbgs() << this->size << "\n";
+    if (auto *I = dyn_cast<GetElementPtrInst>(V)) {
+      if(size==0){
+        return false;
+      }
+      if(size==1){
+        PHINode *CPHI1 = nullptr;
+        auto Matcher = m_OneOf(
+            // Match 1-D stencil access with no offset
+            m_GEP(m_Value(*ArrayPointer), m_PHI(CPHI1)),
+            // Match 1-D stencil access with a constant offset
+            m_GEP(m_Value(*ArrayPointer), m_c_Add(m_ConstantInt(),m_PHI(CPHI1))),
+            m_GEP(m_Value(*ArrayPointer), m_Sub(m_PHI(CPHI1),m_ConstantInt()))
+        );
+        bool matched = PatternMatch::match(I, Matcher);
+        if(matched){
+          if(CPHI1==nullptr){
+            dbgs() << "CPHI1 is nullptr\n";
+          } else{
+            dbgs() << "CPHI1 is not nullptr\n";
+          }
+          return true;
+        }
+      }
+      else{
+        StencilAccess_match RMatcher = StencilAccess_match(InductionVariablesAsValue, ArrayPointer, this->size-1);
+        auto Matcher = m_OneOf(
+            // Match 1-D stencil access with no offset
+            m_GEP(RMatcher, m_Value(), m_PHI((*InductionVariablesAsValue)[size-1])),
+            // Match 1-D stencil access with a constant offset
+            m_GEP(RMatcher, m_Value(), m_c_Add(m_ConstantInt(),m_PHI((*InductionVariablesAsValue)[size-1]))),
+            m_GEP(RMatcher, m_Value(), m_Sub(m_PHI((*InductionVariablesAsValue)[size-1]),m_ConstantInt()))
+        );
+        if(PatternMatch::match(V, Matcher)){
+          return true;
+        } else{
+          return PatternMatch::match(V, RMatcher);
+        }
+      }
+    }
+    return false;
+  }
+};
 
 inline auto matchBinOp(Value *&BinLHS, Value *&BinRHS) {
   return m_c_BinOp(m_Value(BinLHS), m_Value(BinRHS));
 }
+
 
 inline void printExpr(const Value *v, const Value * i) {
   dbgs() << "[expr]\n";
@@ -872,7 +959,7 @@ inline void printExpr(const Value *v, const Value * i) {
       WorkQueue.insert(BinLHS);
     } else if (match(V, m_Constant())) {
       dbgs() << "Constant (Leaf): "; V->print(dbgs()); dbgs() << "\n";
-    } else if (match(V, m_Load(matchStencilAccess(i, BinLHS)))) {
+    } else if (match(V, m_Load(match1DStencilAccess(i, BinLHS)))) {
       dbgs() << "Stencil Pattern Access (Leaf): "; V->print(dbgs()); dbgs() << " to array "; BinLHS->print(dbgs()); dbgs() << "\n";
     } else {
       dbgs() << "Generic Leaf: "; V->print(dbgs()); dbgs() << "\n";
@@ -891,7 +978,7 @@ bool isStencilStore(Instruction &StoreInstr, PHINode *InductionVariable, const L
 
   auto Matcher = m_Store(
     m_Value(), // ! Connect here
-    matchStencilAccess(InductionVariableAsValue,ArrayPointer)
+    match1DStencilAccess(InductionVariableAsValue,ArrayPointer)
   );
 
   auto matched = match(StoreInstrAsValue, Matcher);
@@ -919,7 +1006,7 @@ bool isStencilLoad(Instruction &LoadInstr, PHINode *InductionVariable, const Loo
   Value *InductionVariableAsValue = static_cast<Value *>(InductionVariable);
   Value *ArrayPointer = nullptr;
   auto Matcher = m_Load(
-    matchStencilAccess(InductionVariableAsValue,ArrayPointer)
+    match1DStencilAccess(InductionVariableAsValue,ArrayPointer)
   );
 
   return match(StoreInstrAsValue, Matcher) && L->isLoopInvariant(ArrayPointer);
@@ -995,6 +1082,7 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
 
         std::vector<const Loop*> Loops = {L};
         std::vector<PHINode*> InductionVariables = {InductionVar};
+        std::vector<PHINode*> InductionVariablesNew = {nullptr};
 
         const Loop* NextLoop = L->getParentLoop();
         while(NextLoop!=nullptr){
@@ -1004,12 +1092,37 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
           }
           Loops.push_back(NextLoop);
           InductionVariables.push_back(NextInductionVar);
+          InductionVariablesNew.push_back(nullptr);
           NextLoop = NextLoop->getParentLoop();
         }
 
         if(isStencilStore(*Instr,InductionVar,L)){
           dbgs() << "Found stencil!\n";
         }
+
+        // ! # TEST BLOCK ##################################################### 
+        Value *ArrayPointer = nullptr;
+        Value *StoreInstrAsValue = static_cast<Value *>((&*Instr));
+        auto Matcher = m_Store(
+          m_Value(), // ! Connect here
+          StencilAccess_match(&InductionVariablesNew,&ArrayPointer)
+        );
+        auto matched = PatternMatch::match(StoreInstrAsValue, Matcher);
+        if(matched){
+          dbgs() << "New: Matched stencil!\n";
+          dbgs() << "Pointer: " << ArrayPointer << "\n";
+          for(unsigned long i=0;i<InductionVariablesNew.size();i++){
+            if(InductionVariablesNew[i]!=nullptr){
+              dbgs() << InductionVariablesNew[i]->getName() << "\n";
+            }
+            else{
+              dbgs() << "nullptr\n";
+            }
+          }
+        } else{
+          dbgs() << "New: Did not match stencil!\n";
+        }
+        // ! # TEST BLOCK END #################################################
       }
     }
   }

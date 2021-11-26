@@ -913,25 +913,35 @@ bool phiMatchesLoop(PHINode *phi, const Loop *L, ScalarEvolution &SE) {
   return L->isAuxiliaryInductionVariable(*phi, SE);
 }
 
+static std::vector <const Loop *> getLoopVector(const Loop *L) {
+  std::vector <const Loop *> Loops = {};
+  while (L!=nullptr) {
+    Loops.push_back(L);
+    L = L->getParentLoop();
+  }
+  return Loops;
+}
+
 static bool matchStencil(Instruction &SeedInst, Value *&IVarI, 
                       Value *&BasePtrToA, Value *&BasePtrToB, LoopInfo &LI,
                       const Loop *L, ScalarEvolution &SE) {
   // auto *SeedInstAsValue = static_cast<Value *>(&SeedInst); // B[] = some func of A[]
   Value *StoreInstrAsValue = static_cast<Value *>(&SeedInst);
-  PHINode *PHI = nullptr;
+  std::vector <const Loop *> Loops = getLoopVector(L);
+  std::vector<PHINode *> PHIs(Loops.size(),nullptr);
   Value *StoreValue = nullptr; // TODO: I think we should check that this is in matchExpr
-  auto StoreMatcher = match(StoreInstrAsValue,matchStencilStore(BasePtrToB, StoreValue, PHI));
+  auto StoreMatcher = match(StoreInstrAsValue,matchStencilStore(BasePtrToB, StoreValue, PHIs[0]));
   if (!StoreMatcher) {
     dbgs() << "! Failed to match stencil store\n";
     return false;
   }
 
-  bool matched = matchExpr(SeedInst.getOperand(0), BasePtrToA, PHI);
+  bool matched = matchExpr(SeedInst.getOperand(0), BasePtrToA, PHIs[0]);
   if (!matched) {
     dbgs() << "! Failed to match expr.\n";
     return false;
   }
-  return phiMatchesLoop(PHI,L,SE);
+  return phiMatchesLoop(PHIs[0],L,SE);
 }
 
 namespace StencilFaRer {

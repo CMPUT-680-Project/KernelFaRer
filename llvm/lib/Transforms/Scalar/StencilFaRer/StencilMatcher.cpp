@@ -738,21 +738,21 @@ static bool matchSYR2K(Instruction &SeedInst, Value *&IVarI, Value *&IVarJ,
   return IsSYR2K;
 }
 
-inline auto matchStencilStore(const Value *C, Value *&AddLHS, Value *&AddRHS) {
-  return m_Store(m_c_FAdd(m_Value(AddLHS), m_Value(AddRHS)), m_Specific(C)); // Match any store of the result of float addition.
-}
+// inline auto matchStencilStore(const Value *C, Value *&AddLHS, Value *&AddRHS) {
+//   return m_Store(m_c_FAdd(m_Value(AddLHS), m_Value(AddRHS)), m_Specific(C)); // Match any store of the result of float addition.
+// }
 
-static bool match1DStencil(Instruction &SeedInst) {
-  auto *SeedInstAsValue = static_cast<Value *>(&SeedInst);
-  auto *StoreToC = SeedInst.getOperand(1);
-  Value *AddLHS = nullptr;
-  Value *AddRHS = nullptr;
-  auto StencilStoreMatcher = matchStencilStore(StoreToC, AddLHS, AddRHS); // Match stores to C as result of float addition
-  if (match(SeedInstAsValue, StencilStoreMatcher)) {
-    return true;
-  }
-  return false;
-}
+// static bool match1DStencil(Instruction &SeedInst) {
+//   auto *SeedInstAsValue = static_cast<Value *>(&SeedInst);
+//   auto *StoreToC = SeedInst.getOperand(1);
+//   Value *AddLHS = nullptr;
+//   Value *AddRHS = nullptr;
+//   auto StencilStoreMatcher = matchStencilStore(StoreToC, AddLHS, AddRHS); // Match stores to C as result of float addition
+//   if (match(SeedInstAsValue, StencilStoreMatcher)) {
+//     return true;
+//   }
+//   return false;
+// }
 
 // A Helper function to get leading dimension value. In case V is the RHS of a
 // Shl instruction, V is set to 1 << V. Otherwise V is unchanged.
@@ -841,6 +841,10 @@ inline auto matchStencilLoad(Value *&PtrOp, PHINode *&Idx) {
   return m_Load(matchPtrOpAndInductionVariable(PtrOp, Idx));
 }
 
+inline auto matchStencilStore(Value *&PtrOp, Value *&ValueStored, PHINode *&Idx) {
+  return m_Store(m_Value(ValueStored),matchPtrOpAndInductionVariable(PtrOp, Idx));
+}
+
 // PtrOp: stencil pattern array
 // Idx: induction variable
 inline bool matchExpr(const Value * seed, Value *&PtrOp, PHINode *&Idx) {
@@ -876,6 +880,7 @@ inline bool matchExpr(const Value * seed, Value *&PtrOp, PHINode *&Idx) {
         dbgs() << "! Multiple arrays being accessed.\n";
         return false;
       }
+      // TODO: I think we should be checking if induction variables match store here
       if (lastIdx && lastIdx != Idx) {
         dbgs() << "! Multiple induction variables.\n";
         return false;
@@ -912,7 +917,16 @@ static bool matchStencil(Instruction &SeedInst, Value *&IVarI,
                       Value *&BasePtrToA, Value *&BasePtrToB, LoopInfo &LI,
                       const Loop *L, ScalarEvolution &SE) {
   // auto *SeedInstAsValue = static_cast<Value *>(&SeedInst); // B[] = some func of A[]
+  // ! TODO: We don't match stencil store
+  Value *StoreInstrAsValue = static_cast<Value *>(&SeedInst);
   PHINode *PHI = nullptr;
+  Value *StoreValue = nullptr; // TODO: I think we should check that this is in matchExpr
+  auto StoreMatcher = match(StoreInstrAsValue,matchStencilStore(BasePtrToB, StoreValue, PHI));
+  if (!StoreMatcher) {
+    dbgs() << "! Failed to match stencil store\n";
+    return false;
+  }
+
   bool matched = matchExpr(SeedInst.getOperand(0), BasePtrToA, PHI);
   if (!matched) {
     dbgs() << "! Failed to match expr.\n";

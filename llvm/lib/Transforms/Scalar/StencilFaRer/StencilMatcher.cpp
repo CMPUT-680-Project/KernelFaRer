@@ -928,6 +928,10 @@ static bool matchStencil(Instruction &SeedInst, Value *&IVarI,
   // auto *SeedInstAsValue = static_cast<Value *>(&SeedInst); // B[] = some func of A[]
   // Initilize for recurrsion
   std::vector <const Loop *> Loops = getLoopVector(L);
+  // ! TODO: We will want to remove this, but this keeps things simple
+  if(Loops.size()>2){
+    Loops.resize(2);
+  }
   std::vector<PHINode *> PHIs(Loops.size(),nullptr);
 
   // Check for stencil store and extract induction variable

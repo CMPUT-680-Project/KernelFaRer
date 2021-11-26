@@ -917,7 +917,6 @@ static bool matchStencil(Instruction &SeedInst, Value *&IVarI,
                       Value *&BasePtrToA, Value *&BasePtrToB, LoopInfo &LI,
                       const Loop *L, ScalarEvolution &SE) {
   // auto *SeedInstAsValue = static_cast<Value *>(&SeedInst); // B[] = some func of A[]
-  // ! TODO: We don't match stencil store
   Value *StoreInstrAsValue = static_cast<Value *>(&SeedInst);
   PHINode *PHI = nullptr;
   Value *StoreValue = nullptr; // TODO: I think we should check that this is in matchExpr

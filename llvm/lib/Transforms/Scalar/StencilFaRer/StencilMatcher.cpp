@@ -926,9 +926,12 @@ static bool matchStencil(Instruction &SeedInst, Value *&IVarI,
                       Value *&BasePtrToA, Value *&BasePtrToB, LoopInfo &LI,
                       const Loop *L, ScalarEvolution &SE) {
   // auto *SeedInstAsValue = static_cast<Value *>(&SeedInst); // B[] = some func of A[]
-  Value *StoreInstrAsValue = static_cast<Value *>(&SeedInst);
+  // Initilize for recurrsion
   std::vector <const Loop *> Loops = getLoopVector(L);
   std::vector<PHINode *> PHIs(Loops.size(),nullptr);
+
+  // Check for stencil store and extract induction variable
+  Value *StoreInstrAsValue = static_cast<Value *>(&SeedInst);
   Value *StoreValue = nullptr; // TODO: I think we should check that this is in matchExpr
   auto StoreMatcher = match(StoreInstrAsValue,matchStencilStore(BasePtrToB, StoreValue, PHIs[0]));
   if (!StoreMatcher) {

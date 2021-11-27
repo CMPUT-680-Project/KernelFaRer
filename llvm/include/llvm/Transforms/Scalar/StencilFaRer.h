@@ -117,6 +117,8 @@ public:
 
   virtual bool isKernelStore(const Value &Store) const = 0;
   virtual bool isKernelValue(const Value &V) const = 0;
+
+  virtual ~Kernel();
 }; // class Kernel
 
 /// Class that represents a triple-nested loop that computes a general

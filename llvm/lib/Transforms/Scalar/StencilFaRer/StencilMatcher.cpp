@@ -322,7 +322,7 @@ inline auto matchSYR2KStore(const Value *C, Value *&AddLHS, Value *&AddRHS) {
 // values, a initialization value (ConstantInt) and a post-increment value
 // (AddInst). A chain of PHINodes is the IR pattern produced when compiling
 // tiled loop nests.
-inline PHINode *extractOutermostPHI(PHINode *const &V) {
+PHINode *extractOutermostPHI(PHINode *const &V) {
   if (!isa<PHINode>(V))
     return nullptr;
 

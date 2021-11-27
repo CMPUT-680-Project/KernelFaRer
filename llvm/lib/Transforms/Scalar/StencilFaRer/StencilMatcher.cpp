@@ -1054,7 +1054,7 @@ static bool matchStencil(Instruction &SeedInst, Value *&IVarI,
   if (it != PHIs.end()) {
     int NewSize = (it-PHIs.begin());
     PHIs.resize(NewSize); // Remove nullptrs from end
-    Loops.resize(NewSize); // Remove outloops that don't match induction vars
+    Loops.resize(NewSize); // Remove outer loops that don't match induction vars
   }
 
   std::vector<PHINode *> MatchedPHIs;

@@ -28,6 +28,10 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar/StencilFaRer.h"
 
+#include <algorithm>
+#include <iterator>
+#include <vector>
+
 using namespace llvm;
 using namespace llvm::PatternMatch;
 using namespace StencilFaRer;
@@ -125,6 +129,42 @@ struct GEP_match {
     return Matched;
   }
 };
+/// This helper class is used to match GEP instruction.
+/// Matches GetElementPointer instruction with pointer and first index, if
+/// NumIndexes == 1, and both last and second last indexes, otherwise.
+template <typename PtrTy, typename IdxTy>
+struct GetElementPtr_match {
+  PtrTy Ptr;
+  std::vector<IdxTy> Idxs;
+
+  GetElementPtr_match(
+    PtrTy &Ptr, 
+    std::vector<IdxTy> &Idxs
+    ): Ptr(Ptr), Idxs(Idxs) {}
+
+  template <typename OpTy> bool match(OpTy *V) {
+    if (auto *I = dyn_cast<GetElementPtrInst>(V)) {
+      auto N = I->getNumOperands();
+      bool Matched = (
+        Ptr.match(I->getOperand(0)) &&
+        Idxs[0].match(I->getOperand(N - 1))
+      );
+      if (Matched){
+        for(unsigned int i = 1; i < N - 1; i++){
+          Idxs[i].match(I->getOperand(N - 1 - i));
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+};
+
+/// Matches GetElementPtrInst's PointerOperand and first Index value.
+template <typename PtrTy, typename IdxTy>
+inline GetElementPtr_match<PtrTy, IdxTy> m_GetElementPtr(PtrTy Ptr, std::vector<IdxTy> Idxs) {
+  return GetElementPtr_match<PtrTy, IdxTy>(Ptr, Idxs);
+}
 
 /// Matches GetElementPtrInst's PointerOperand and first Index value.
 template <typename PtrTy, typename IdxTy>
@@ -825,8 +865,57 @@ inline auto scaledPHIOrPHI(PHINode *&PHI) {
                 m_Shl(m_PHI(PHI), m_ConstantInt()),
                 m_Shr(m_PHI(PHI), m_ConstantInt())));
 }
-
-inline auto linearFunctionOf1PHI(PHINode *&PHI) { // ! TODO: Generalize to many PHIs. Worklist algorithm again?
+using LinearPhiReturn = llvm::PatternMatch::match_one_of<
+    llvm::PatternMatch::match_combine_or<
+        llvm::PatternMatch::bind_ty<llvm::PHINode>,
+        llvm::PatternMatch::match_one_of<
+            llvm::PatternMatch::BinaryOp_match<
+                llvm::PatternMatch::bind_ty<llvm::PHINode>,
+                llvm::PatternMatch::class_match<llvm::ConstantInt>, 17, true>,
+            llvm::PatternMatch::BinaryOp_match<
+                llvm::PatternMatch::bind_ty<llvm::PHINode>,
+                llvm::PatternMatch::class_match<llvm::ConstantInt>, 25, false>,
+            llvm::PatternMatch::BinOpPred_match<
+                llvm::PatternMatch::bind_ty<llvm::PHINode>,
+                llvm::PatternMatch::class_match<llvm::ConstantInt>,
+                llvm::PatternMatch::is_right_shift_op>>>,
+    llvm::PatternMatch::BinaryOp_match<
+        llvm::PatternMatch::match_combine_or<
+            llvm::PatternMatch::bind_ty<llvm::PHINode>,
+            llvm::PatternMatch::match_one_of<
+                llvm::PatternMatch::BinaryOp_match<
+                    llvm::PatternMatch::bind_ty<llvm::PHINode>,
+                    llvm::PatternMatch::class_match<llvm::ConstantInt>, 17,
+                    true>,
+                llvm::PatternMatch::BinaryOp_match<
+                    llvm::PatternMatch::bind_ty<llvm::PHINode>,
+                    llvm::PatternMatch::class_match<llvm::ConstantInt>, 25,
+                    false>,
+                llvm::PatternMatch::BinOpPred_match<
+                    llvm::PatternMatch::bind_ty<llvm::PHINode>,
+                    llvm::PatternMatch::class_match<llvm::ConstantInt>,
+                    llvm::PatternMatch::is_right_shift_op>>>,
+        llvm::PatternMatch::class_match<llvm::ConstantInt>, 13, true>,
+    llvm::PatternMatch::BinaryOp_match<
+        llvm::PatternMatch::match_combine_or<
+            llvm::PatternMatch::bind_ty<llvm::PHINode>,
+            llvm::PatternMatch::match_one_of<
+                llvm::PatternMatch::BinaryOp_match<
+                    llvm::PatternMatch::bind_ty<llvm::PHINode>,
+                    llvm::PatternMatch::class_match<llvm::ConstantInt>, 17,
+                    true>,
+                llvm::PatternMatch::BinaryOp_match<
+                    llvm::PatternMatch::bind_ty<llvm::PHINode>,
+                    llvm::PatternMatch::class_match<llvm::ConstantInt>, 25,
+                    false>,
+                llvm::PatternMatch::BinOpPred_match<
+                    llvm::PatternMatch::bind_ty<llvm::PHINode>,
+                    llvm::PatternMatch::class_match<llvm::ConstantInt>,
+                    llvm::PatternMatch::is_right_shift_op>>>,
+        llvm::PatternMatch::specific_intval<false>, 29, true>>;
+inline LinearPhiReturn linearFunctionOf1PHI(
+    PHINode *
+        &PHI) { // ! TODO: Generalize to many PHIs. Worklist algorithm again?
   return m_OneOf(
       scaledPHIOrPHI(PHI),
       m_c_Add(scaledPHIOrPHI(PHI), m_ConstantInt()),
@@ -837,12 +926,26 @@ inline auto matchPtrOpAndInductionVariable(Value *&Op, PHINode *&PHI) {
   return m_GEP(m_Value(Op), linearFunctionOf1PHI(PHI));
 }
 
+inline auto matchPtrOpAndInductionVariableVector(Value *&Op, std::vector<PHINode *> &PHIVector) {
+  std::vector<LinearPhiReturn> PHIFunctions={};
+  for (size_t i = 0; i < PHIVector.size(); i++) {
+    PHIFunctions.push_back(linearFunctionOf1PHI(PHIVector[i]));
+  }
+
+  return m_GetElementPtr(m_Value(Op), PHIFunctions);
+}
+
+// // This wrapper is kind of hacky, but was not sure how else to get types to work
+// inline auto matchPtrOpAndInductionVariableVector(Value *&Op, std::vector<PHINode *> &PHIVector) {
+//   return matchPtrOpAndInductionVariableVector(Op, PHIVector, linearFunctionOf1PHI(PHIVector[0]));
+// }
+
 inline auto matchStencilLoad(Value *&PtrOp, PHINode *&Idx) {
   return m_Load(matchPtrOpAndInductionVariable(PtrOp, Idx));
 }
 
-inline auto matchStencilStore(Value *&PtrOp, Value *&ValueStored, PHINode *&Idx) {
-  return m_Store(m_Value(ValueStored),matchPtrOpAndInductionVariable(PtrOp, Idx));
+inline auto matchStencilStore(Value *&PtrOp, Value *&ValueStored, std::vector<PHINode *> &Idxs) {
+  return m_Store(m_Value(ValueStored),matchPtrOpAndInductionVariableVector(PtrOp, Idxs));
 }
 
 // PtrOp: stencil pattern array
@@ -907,7 +1010,7 @@ bool phiMatchesLoop(PHINode *phi, const Loop *L, ScalarEvolution &SE) {
     return false;
   }
   if(L->getLoopPreheader()==nullptr){
-    dbgs() << "Loop missing preheader. This is required to initalize/detect induction var";
+    dbgs() << "Loop missing preheader. This is required to initalize/detect induction var\n";
     return false;
   }
   return L->isAuxiliaryInductionVariable(*phi, SE);
@@ -928,23 +1031,58 @@ static bool matchStencil(Instruction &SeedInst, Value *&IVarI,
   // auto *SeedInstAsValue = static_cast<Value *>(&SeedInst); // B[] = some func of A[]
   // Initilize for recurrsion
   std::vector <const Loop *> Loops = getLoopVector(L);
-  // ! TODO: We will want to remove this, but this keeps things simple
-  if(Loops.size()>2){
-    Loops.resize(2);
-  }
   std::vector<PHINode *> PHIs(Loops.size(),nullptr);
 
   // Check for stencil store and extract induction variable
   Value *StoreInstrAsValue = static_cast<Value *>(&SeedInst);
   Value *StoreValue = nullptr; // TODO: I think we should check that this is in matchExpr
-  auto StoreMatcher = match(StoreInstrAsValue,matchStencilStore(BasePtrToB, StoreValue, PHIs[0]));
-  if (!StoreMatcher) {
+  bool StoreMatched = match(StoreInstrAsValue,matchStencilStore(BasePtrToB, StoreValue, PHIs));
+  if (!StoreMatched) {
     dbgs() << "! Failed to match stencil store\n";
     return false;
   }
+  dbgs() << "Phis:" << "\n";
+  for(auto &phi: PHIs){
+    if(phi==nullptr){
+      dbgs() << "nullptr\n";
+    }
+    else{
+      dbgs() << "not nullptr\n";
+    }
+  }
+  auto it = std::find(PHIs.begin(), PHIs.end(), nullptr);
+  if (it != PHIs.end()) {
+    int NewSize = (it-PHIs.begin());
+    PHIs.resize(NewSize); // Remove nullptrs from end
+    Loops.resize(NewSize); // Remove outloops that don't match induction vars
+  }
 
-  bool matched = matchExpr(SeedInst.getOperand(0), BasePtrToA, PHIs[0]);
-  if (!matched) {
+  std::vector<PHINode *> MatchedPHIs;
+
+  // Match induction vars to loops
+  for(auto loop: Loops){
+    bool found = false;
+    for(auto &phi: PHIs){
+      if(phiMatchesLoop(phi, loop, SE)){
+        dbgs() << "Matched PHI: "; phi->print(dbgs()); dbgs() << "\n";
+        MatchedPHIs.push_back(phi);
+        found=true;
+        break;
+      }
+    }
+    if(!found){
+      dbgs() << "! Failed to match induction variables to loops\n";
+      return false;
+    }
+  }
+
+  // Loops -> Loops that match induction vars (inner most first)
+  // MatchedPHIs -> Induction vars ordred by matching Loops
+  // PHIs -> Induction vars ordred by usage
+
+
+  bool ExprMatched = matchExpr(SeedInst.getOperand(0), BasePtrToA, PHIs[0]);
+  if (!ExprMatched) {
     dbgs() << "! Failed to match expr.\n";
     return false;
   }

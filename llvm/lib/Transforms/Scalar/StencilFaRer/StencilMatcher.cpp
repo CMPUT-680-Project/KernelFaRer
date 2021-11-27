@@ -1086,7 +1086,7 @@ static bool matchStencil(Instruction &SeedInst, Value *&IVarI,
     dbgs() << "! Failed to match expr.\n";
     return false;
   }
-  return phiMatchesLoop(PHIs[0],L,SE);
+  return true;
 }
 
 namespace StencilFaRer {

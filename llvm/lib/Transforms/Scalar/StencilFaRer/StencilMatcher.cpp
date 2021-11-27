@@ -502,14 +502,18 @@ static bool matchLoopLowerBound(LoopInfo &LI, PHINode *IndVar, Value *&LBound) {
 }
 
 // A helper function that returns the outer loop associated with one of the
-// induction variables I, J, and K.
-static Loop *getOuterLoop(LoopInfo &LI, Value *const &I, Value *const &J,
-                          Value *const &K) { // ! TODO: Generalize to any number of induction vars
-  auto *A = LI.getLoopFor(static_cast<const PHINode *>(I)->getParent());
-  auto *B = LI.getLoopFor(static_cast<const PHINode *>(J)->getParent());
-  auto *C = LI.getLoopFor(static_cast<const PHINode *>(K)->getParent());
-  auto *L = A->getLoopDepth() < B->getLoopDepth() ? A : B;
-  return L->getLoopDepth() < C->getLoopDepth() ? L : C;
+static Loop *getOuterLoop(LoopInfo &LI, const SmallVector<Value *, 3> &IVars) { // ! TODO: Generalize to any number of induction vars
+  Loop * outer = nullptr;
+  unsigned int min_depth = UINT_MAX;
+  for (auto *iv : IVars) {
+    auto *l = LI.getLoopFor(static_cast<const PHINode *>(iv)->getParent());
+    unsigned int depth = l->getLoopDepth();
+    if (depth < min_depth) {
+      min_depth = depth;
+      outer = l;
+    }
+  }
+  return outer;
 }
 
 // A helper function that detects which access order (Layout) each matrix (A,
@@ -998,7 +1002,7 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
         } else
           continue;
 
-        const Loop *OuterLoop = L; // getOuterLoop(LI, IVarI, IVarJ, IVarK); // ! TODO: generalize to deeper loops
+        const Loop *OuterLoop = getOuterLoop(LI, {IVarI});
         // Verify that we only have one block we're exiting from.
         if (OuterLoop->getExitingBlock() == nullptr) {
           LLVM_DEBUG(dbgs() << "Loop had multiple exiting blocks.\n");

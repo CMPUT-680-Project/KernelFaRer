@@ -151,7 +151,9 @@ struct GetElementPtr_match {
       );
       if (Matched){
         for(unsigned int i = 1; i < N - 1; i++){
-          Idxs[i].match(I->getOperand(N - 1 - i));
+          if(Idxs.size() > i){
+            Idxs[i].match(I->getOperand(N - 1 - i));
+          }
         }
         return true;
       }
@@ -951,23 +953,42 @@ inline auto matchPtrOpAndInductionVariableVector(Value *&Op, std::vector<PHINode
 //   return matchPtrOpAndInductionVariableVector(Op, PHIVector, linearFunctionOf1PHI(PHIVector[0]));
 // }
 
-inline auto matchStencilLoad(Value *&PtrOp, PHINode *&Idx) {
-  return m_Load(matchPtrOpAndInductionVariable(PtrOp, Idx));
+inline auto matchStencilLoad(Value *&PtrOp, std::vector<PHINode *> &Idxs) {
+  return m_Load(matchPtrOpAndInductionVariableVector(PtrOp, Idxs));
 }
 
 inline auto matchStencilStore(Value *&PtrOp, Value *&ValueStored, std::vector<PHINode *> &Idxs) {
   return m_Store(m_Value(ValueStored),matchPtrOpAndInductionVariableVector(PtrOp, Idxs));
 }
 
+inline bool PHIVectorsMatch(std::vector<PHINode *> &PHIVectorA, std::vector<PHINode *> &PHIVectorB) {
+  if (PHIVectorA.size() != PHIVectorB.size())
+    return false;
+  for(size_t i = 0; i < PHIVectorA.size(); i++) {
+    if (PHIVectorA[i] != PHIVectorB[i])
+      return false;
+  }
+  return true;
+}
+
+std::vector<PHINode *> toOuterMostPHIs(std::vector<PHINode *> &PHIVector) {
+  std::vector<PHINode *> OutPhis = {};
+  for(auto Phi: PHIVector) {
+    OutPhis.push_back(extractOutermostPHI(Phi));
+  }
+  return OutPhis;
+}
+
 // PtrOp: stencil pattern array
 // Idx: induction variable
-inline bool matchExpr(const Value * seed, Value *&PtrOp, PHINode *&Idx) {
+inline bool matchExpr(const Value * seed, Value *&PtrOp, std::vector<PHINode *> &OuterMostStoreIdxs) {
   dbgs() << "[expr]\n";
   SmallSetVector<const Value *, 8> WorkQueue;
   WorkQueue.insert(seed);
 
   Value *lastPtrOp = nullptr;
-  Value *lastIdx = nullptr;
+  std::vector<PHINode *> LoadIdxs(OuterMostStoreIdxs.size(),nullptr);
+  std::vector<PHINode *> OuterMostLoadIdxs;
 
   while (!WorkQueue.empty()) {
     const auto *v = WorkQueue.front();
@@ -989,22 +1010,22 @@ inline bool matchExpr(const Value * seed, Value *&PtrOp, PHINode *&Idx) {
     } else if (match(v, m_Constant())) {
       dbgs() << "Constant (Leaf): "; v->print(dbgs()); dbgs() << "\n";
 
-    } else if (match(v, matchStencilLoad(PtrOp, Idx))) {
+    } else if (match(v, matchStencilLoad(PtrOp, LoadIdxs))) {
       if (lastPtrOp && lastPtrOp != PtrOp) {
         dbgs() << "! Multiple arrays being accessed.\n";
         return false;
       }
+      OuterMostLoadIdxs = toOuterMostPHIs(LoadIdxs);
       // TODO: I think we should be checking if induction variables match store here
-      if (lastIdx && lastIdx != Idx) {
-        dbgs() << "! Multiple induction variables.\n";
+      if (!PHIVectorsMatch(OuterMostStoreIdxs, OuterMostLoadIdxs)) {
+        dbgs() << "! Load doesn't match store induction vars.\n";
         return false;
       }
       dbgs() << "Stencil Pattern Access (Leaf) to array "; PtrOp->print(dbgs()); 
-      dbgs() << " | PHI Node: "; Idx->print(dbgs()); 
+      dbgs() << " | PHI Node: "; //Idx->print(dbgs()); 
       dbgs() << " | "; v->print(dbgs()); 
       dbgs() << "\n";
       lastPtrOp = PtrOp;
-      lastIdx = Idx;
 
     } else {
       dbgs() << "Generic Leaf: "; v->print(dbgs()); dbgs() << "\n";
@@ -1012,7 +1033,13 @@ inline bool matchExpr(const Value * seed, Value *&PtrOp, PHINode *&Idx) {
     }
   }
   dbgs() << "Done reading expr.\n";
-  if (PtrOp == nullptr || Idx == nullptr) {
+  auto it = std::find(LoadIdxs.begin(), LoadIdxs.end(), nullptr);
+  int firstNullIdx;
+  // If equals 0 did not match stencil load since all initial values are null
+  if (it != LoadIdxs.end()) {
+    firstNullIdx = (it-LoadIdxs.begin());
+  }
+  if (PtrOp == nullptr || firstNullIdx==0) {
     dbgs() << "It is NOT a stencil expr!\n";
     return false;
   }
@@ -1041,7 +1068,7 @@ static std::vector <const Loop *> getLoopVector(const Loop *L) {
   return Loops;
 }
 
-static bool matchStencil(Instruction &SeedInst, Value *&IVarI, 
+static bool matchStencil(Instruction &SeedInst, std::vector<PHINode *> &OuterMostPHIs, 
                       Value *&BasePtrToA, Value *&BasePtrToB, LoopInfo &LI,
                       const Loop *L, ScalarEvolution &SE) {
   // auto *SeedInstAsValue = static_cast<Value *>(&SeedInst); // B[] = some func of A[]
@@ -1073,12 +1100,13 @@ static bool matchStencil(Instruction &SeedInst, Value *&IVarI,
     Loops.resize(NewSize); // Remove outer loops that don't match induction vars
   }
 
+  OuterMostPHIs = toOuterMostPHIs(PHIs);
   std::vector<PHINode *> MatchedPHIs;
 
   // Match induction vars to loops
   for(auto loop: Loops){
     bool found = false;
-    for(auto &phi: PHIs){
+    for(auto &phi: OuterMostPHIs){
       if(phiMatchesLoop(phi, loop, SE)){
         dbgs() << "Matched PHI: "; phi->print(dbgs()); dbgs() << "\n";
         MatchedPHIs.push_back(phi);
@@ -1093,18 +1121,14 @@ static bool matchStencil(Instruction &SeedInst, Value *&IVarI,
   }
 
   // Loops -> Loops that match induction vars (inner most first)
-  // MatchedPHIs -> Induction vars ordred by matching Loops
+  // MatchedPHIs -> (Outermost) Induction vars ordred by matching Loops
+  // OuterMostPHIs -> (Outermost) Induction vars ordred by usage
   // PHIs -> Induction vars ordred by usage
+ 
 
-
-  bool ExprMatched = matchExpr(SeedInst.getOperand(0), BasePtrToA, PHIs[0]);
+  bool ExprMatched = matchExpr(SeedInst.getOperand(0), BasePtrToA, OuterMostPHIs);
   if (!ExprMatched) {
     dbgs() << "! Failed to match expr.\n";
-    return false;
-  }
-  IVarI = extractOutermostPHI(PHIs[0]);
-  if (IVarI == nullptr) {
-    dbgs() << "! Failed to match outermost PHI!\n";
     return false;
   }
   return true;
@@ -1126,21 +1150,34 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
 
         Value *BasePtrToA = nullptr;
         Value *BasePtrToB = nullptr;
-        Value *IVarI = nullptr;
-        Value *ILBound = nullptr; // Lower bound for induction variable I
-        Value *IUBound = nullptr; // Upper bound for induction variable I
+        std::vector<PHINode *> OuterMostPHIs;
         SmallSetVector<const llvm::Value *, 2> Stores;
 
-        if (matchStencil(*Inst, IVarI, BasePtrToA, BasePtrToB, LI, L, SE) &&
-            matchLoopLowerBound(LI, static_cast<PHINode *>(IVarI), ILBound) &&
-            matchLoopUpperBound(LI, static_cast<PHINode *>(IVarI), IUBound)) {
-            dbgs() << "Found a stencil!\n";
-            dbgs() << "Loop lower bound: "; ILBound->print(dbgs()); dbgs() << "\n";
-            dbgs() << "Loop upper bound: "; IUBound->print(dbgs()); dbgs() << "\n";
-        } else
+        if (matchStencil(*Inst, OuterMostPHIs, BasePtrToA, BasePtrToB, LI, L, SE)){
+            bool matchBounds = true;
+            // TODO: Might want to order these by loops instead of access (or maybe it is ok)
+            for (auto *phi : OuterMostPHIs) {
+              Value *ILBound = nullptr; // Lower bound for induction variable I
+              Value *IUBound = nullptr; // Upper bound for induction variable I
+              if (
+                matchLoopLowerBound(LI, static_cast<PHINode *>(phi), ILBound) &&
+                matchLoopUpperBound(LI, static_cast<PHINode *>(phi), IUBound)
+              ){
+                dbgs() << "Loop lower bound: "; ILBound->print(dbgs()); dbgs() << "\n";
+                dbgs() << "Loop upper bound: "; IUBound->print(dbgs()); dbgs() << "\n";
+              } else{
+                matchBounds = false;
+              }
+              if (matchBounds) {
+                dbgs() << "Found a stencil!\n";
+              }
+            }
+        } else {
           continue;
+        }
 
-        const Loop *OuterLoop = getOuterLoop(LI, {IVarI});
+        // ! TODO: Use all induction vars
+        const Loop *OuterLoop = getOuterLoop(LI, {OuterMostPHIs[0]});
         // Verify that we only have one block we're exiting from.
         if (OuterLoop->getExitingBlock() == nullptr) {
           LLVM_DEBUG(dbgs() << "Loop had multiple exiting blocks.\n");

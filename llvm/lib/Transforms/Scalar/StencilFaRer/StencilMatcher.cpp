@@ -362,7 +362,7 @@ inline auto matchSYR2KStore(const Value *C, Value *&AddLHS, Value *&AddRHS) {
 // values, a initialization value (ConstantInt) and a post-increment value
 // (AddInst). A chain of PHINodes is the IR pattern produced when compiling
 // tiled loop nests.
-inline PHINode *extractOutermostPHI(PHINode *const &V) {
+PHINode *extractOutermostPHI(PHINode *const &V) {
   if (!isa<PHINode>(V))
     return nullptr;
 
@@ -375,8 +375,8 @@ inline PHINode *extractOutermostPHI(PHINode *const &V) {
 
     if (match(
             PHI,
-            m_OneOf(m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_ConstantInt()),
-                    m_PHI(m_ConstantInt(), m_c_Add(m_Specific(PHI), m_Value())),
+            m_OneOf(m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_Value()),
+                    m_PHI(m_Value(), m_c_Add(m_Specific(PHI), m_Value())),
                     m_PHI(m_ConstantInt(), m_ConstantInt()))))
       return const_cast<PHINode *>(PHI);
 
@@ -522,27 +522,38 @@ static bool matchLoopUpperBound(LoopInfo &LI, PHINode *IndVar, Value *&UBound) {
 }
 
 // A helper function that tries to find the lower bound (LBound) of a loop
-// associated with the induction variable (IndVar). If the upper bound is found
-// and is a constant, then this function returns true and sets the incoming
-// argument LBound to whichever value the loop associated with IndVar has.
-// Otherwise, this function returns false and sets LBound to nullptr.
-// If the incoming PHINode is a Phi(true, false) as in tripcount == 2 loops,
-// the bound is not matched.
+// associated with the induction variable (IndVar). If the lower bound is found,
+// then this function returns true and sets the incoming argument LBound to 
+// whichever value the loop associated with IndVar has. Otherwise, this function
+// returns false and sets LBound to nullptr. 
 static bool matchLoopLowerBound(LoopInfo &LI, PHINode *IndVar, Value *&LBound) {
-  // ! TODO: match lower bound
-  LBound = nullptr;
-  return true;
+  auto LBoundMatcher = m_OneOf(m_ZExt(m_Value(LBound)),
+                              m_SExt(m_Value(LBound)),
+                              m_Value(LBound));
+  if (match(IndVar,
+        m_OneOf(m_PHI(m_c_Add(m_Specific(IndVar), m_Value()), LBoundMatcher),
+                m_PHI(LBoundMatcher, m_c_Add(m_Specific(IndVar), m_Value()))
+                ))) {
+    return true;
+  } else {
+    LBound = nullptr;
+    return false;
+  }
 }
 
 // A helper function that returns the outer loop associated with one of the
-// induction variables I, J, and K.
-static Loop *getOuterLoop(LoopInfo &LI, Value *const &I, Value *const &J,
-                          Value *const &K) { // ! TODO: Generalize to any number of induction vars
-  auto *A = LI.getLoopFor(static_cast<const PHINode *>(I)->getParent());
-  auto *B = LI.getLoopFor(static_cast<const PHINode *>(J)->getParent());
-  auto *C = LI.getLoopFor(static_cast<const PHINode *>(K)->getParent());
-  auto *L = A->getLoopDepth() < B->getLoopDepth() ? A : B;
-  return L->getLoopDepth() < C->getLoopDepth() ? L : C;
+static Loop *getOuterLoop(LoopInfo &LI, const SmallVector<Value *, 3> &IVars) { // ! TODO: Generalize to any number of induction vars
+  Loop * outer = nullptr;
+  unsigned int min_depth = UINT_MAX;
+  for (auto *iv : IVars) {
+    auto *l = LI.getLoopFor(static_cast<const PHINode *>(iv)->getParent());
+    unsigned int depth = l->getLoopDepth();
+    if (depth < min_depth) {
+      min_depth = depth;
+      outer = l;
+    }
+  }
+  return outer;
 }
 
 // A helper function that detects which access order (Layout) each matrix (A,
@@ -1000,7 +1011,12 @@ inline bool matchExpr(const Value * seed, Value *&PtrOp, PHINode *&Idx) {
 
     }
   }
-  dbgs() << "Done reading expr!\n";
+  dbgs() << "Done reading expr.\n";
+  if (PtrOp == nullptr || Idx == nullptr) {
+    dbgs() << "It is NOT a stencil expr!\n";
+    return false;
+  }
+  dbgs() << "It is a stencil expr!\n";
   return true;
 }
 
@@ -1086,6 +1102,11 @@ static bool matchStencil(Instruction &SeedInst, Value *&IVarI,
     dbgs() << "! Failed to match expr.\n";
     return false;
   }
+  IVarI = extractOutermostPHI(PHIs[0]);
+  if (IVarI == nullptr) {
+    dbgs() << "! Failed to match outermost PHI!\n";
+    return false;
+  }
   return true;
 }
 
@@ -1110,14 +1131,16 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
         Value *IUBound = nullptr; // Upper bound for induction variable I
         SmallSetVector<const llvm::Value *, 2> Stores;
 
-        if (matchStencil(*Inst, IVarI, BasePtrToA, BasePtrToB, LI, L, SE)) {
-            // matchLoopLowerBound(LI, static_cast<PHINode *>(IVarI), ILBound) &&
-            // matchLoopUpperBound(LI, static_cast<PHINode *>(IVarI), IUBound)) {
+        if (matchStencil(*Inst, IVarI, BasePtrToA, BasePtrToB, LI, L, SE) &&
+            matchLoopLowerBound(LI, static_cast<PHINode *>(IVarI), ILBound) &&
+            matchLoopUpperBound(LI, static_cast<PHINode *>(IVarI), IUBound)) {
             dbgs() << "Found a stencil!\n";
+            dbgs() << "Loop lower bound: "; ILBound->print(dbgs()); dbgs() << "\n";
+            dbgs() << "Loop upper bound: "; IUBound->print(dbgs()); dbgs() << "\n";
         } else
           continue;
 
-        const Loop *OuterLoop = L; // getOuterLoop(LI, IVarI, IVarJ, IVarK); // ! TODO: generalize to deeper loops
+        const Loop *OuterLoop = getOuterLoop(LI, {IVarI});
         // Verify that we only have one block we're exiting from.
         if (OuterLoop->getExitingBlock() == nullptr) {
           LLVM_DEBUG(dbgs() << "Loop had multiple exiting blocks.\n");

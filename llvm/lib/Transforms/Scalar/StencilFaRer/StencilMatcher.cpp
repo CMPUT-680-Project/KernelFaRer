@@ -1022,7 +1022,10 @@ inline bool matchExpr(const Value * seed, Value *&PtrOp, std::vector<PHINode *> 
         return false;
       }
       dbgs() << "Stencil Pattern Access (Leaf) to array "; PtrOp->print(dbgs()); 
-      dbgs() << " | PHI Node: "; //Idx->print(dbgs()); 
+      dbgs() << " | PHI Nodes: "; 
+      for (auto Idx: OuterMostLoadIdxs) {
+        Idx->print(dbgs()); 
+      }
       dbgs() << " | "; v->print(dbgs()); 
       dbgs() << "\n";
       lastPtrOp = PtrOp;

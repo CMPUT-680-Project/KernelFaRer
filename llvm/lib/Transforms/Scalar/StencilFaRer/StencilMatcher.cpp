@@ -1036,7 +1036,7 @@ inline bool matchExpr(const Value * seed, Value *&PtrOp, std::vector<PHINode *> 
   }
   dbgs() << "Done reading expr.\n";
   auto it = std::find(LoadIdxs.begin(), LoadIdxs.end(), nullptr);
-  int firstNullIdx;
+  int firstNullIdx = -1;
   // If equals 0 did not match stencil load since all initial values are null
   if (it != LoadIdxs.end()) {
     firstNullIdx = (it-LoadIdxs.begin());

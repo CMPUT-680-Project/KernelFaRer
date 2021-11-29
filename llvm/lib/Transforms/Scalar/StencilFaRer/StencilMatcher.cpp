@@ -544,7 +544,7 @@ static bool matchLoopLowerBound(LoopInfo &LI, PHINode *IndVar, Value *&LBound) {
 }
 
 // A helper function that returns the outer loop associated with one of the
-static Loop *getOuterLoop(LoopInfo &LI, const SmallVector<Value *, 3> &IVars) { // ! TODO: Generalize to any number of induction vars
+static Loop *getOuterLoop(LoopInfo &LI, const std::vector<PHINode *> &IVars) { // ! TODO: Generalize to any number of induction vars
   Loop * outer = nullptr;
   unsigned int min_depth = UINT_MAX;
   for (auto *iv : IVars) {
@@ -1016,7 +1016,6 @@ inline bool matchExpr(const Value * seed, Value *&PtrOp, std::vector<PHINode *> 
         return false;
       }
       OuterMostLoadIdxs = toOuterMostPHIs(LoadIdxs);
-      // TODO: I think we should be checking if induction variables match store here
       if (!PHIVectorsMatch(OuterMostStoreIdxs, OuterMostLoadIdxs)) {
         dbgs() << "! Load doesn't match store induction vars.\n";
         return false;
@@ -1179,8 +1178,7 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
           continue;
         }
 
-        // ! TODO: Use all induction vars
-        const Loop *OuterLoop = getOuterLoop(LI, {OuterMostPHIs[0]});
+        const Loop *OuterLoop = getOuterLoop(LI, OuterMostPHIs);
         // Verify that we only have one block we're exiting from.
         if (OuterLoop->getExitingBlock() == nullptr) {
           LLVM_DEBUG(dbgs() << "Loop had multiple exiting blocks.\n");

@@ -1049,13 +1049,17 @@ inline bool matchExpr(const Value * seed, Value *&PtrOp, std::vector<PHINode *> 
   return true;
 }
 
-bool phiMatchesLoop(PHINode *phi, const Loop *L, ScalarEvolution &SE) {
+bool phiMatchesLoop(PHINode *phi, const Loop *L, ScalarEvolution &SE, LoopInfo &LI) {
   if(phi==nullptr){
     dbgs() << "phi is nullptr. This should not happen\n";
     return false;
   }
   if(L->getLoopPreheader()==nullptr){
-    dbgs() << "Loop missing preheader. This is required to initalize/detect induction var\n";
+    dbgs() << "Loop missing preheader. Trying to use loop info\n";
+    if(LI.getLoopFor(extractOutermostPHI(phi)->getParent())==L){
+      dbgs() << "Matched loop via loop info\n";
+      return true;
+    }
     return false;
   }
   return L->isAuxiliaryInductionVariable(*phi, SE);
@@ -1109,7 +1113,7 @@ static bool matchStencil(Instruction &SeedInst, std::vector<PHINode *> &OuterMos
   for(auto loop: Loops){
     bool found = false;
     for(auto &phi: OuterMostPHIs){
-      if(phiMatchesLoop(phi, loop, SE)){
+      if(phiMatchesLoop(phi, loop, SE, LI)){
         dbgs() << "Matched PHI: "; phi->print(dbgs()); dbgs() << "\n";
         MatchedPHIs.push_back(phi);
         found=true;

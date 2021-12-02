@@ -981,7 +981,7 @@ std::vector<PHINode *> toOuterMostPHIs(std::vector<PHINode *> &PHIVector) {
 
 // PtrOp: stencil pattern array
 // Idx: induction variable
-inline bool matchExpr(const Value * seed, Value *&PtrOp, std::vector<PHINode *> &OuterMostStoreIdxs) {
+inline bool matchExpr(const Value * seed, Value *&PtrOp, Value *&StorePtrOp, std::vector<PHINode *> &OuterMostStoreIdxs) {
   dbgs() << "[expr]\n";
   SmallSetVector<const Value *, 8> WorkQueue;
   WorkQueue.insert(seed);
@@ -1011,7 +1011,7 @@ inline bool matchExpr(const Value * seed, Value *&PtrOp, std::vector<PHINode *> 
       dbgs() << "Constant (Leaf): "; v->print(dbgs()); dbgs() << "\n";
 
     } else if (match(v, matchStencilLoad(PtrOp, LoadIdxs))) {
-      if (lastPtrOp && lastPtrOp != PtrOp) {
+      if (lastPtrOp && StorePtrOp!=StorePtrOp && lastPtrOp != PtrOp) {
         dbgs() << "! Multiple arrays being accessed.\n";
         return false;
       }
@@ -1027,7 +1027,9 @@ inline bool matchExpr(const Value * seed, Value *&PtrOp, std::vector<PHINode *> 
       }
       dbgs() << " | "; v->print(dbgs()); 
       dbgs() << "\n";
-      lastPtrOp = PtrOp;
+      if(PtrOp!=StorePtrOp) {
+        lastPtrOp = PtrOp;
+      }
 
     } else {
       dbgs() << "Generic Leaf: "; v->print(dbgs()); dbgs() << "\n";
@@ -1132,7 +1134,7 @@ static bool matchStencil(Instruction &SeedInst, std::vector<PHINode *> &OuterMos
   // PHIs -> Induction vars ordred by usage
  
 
-  bool ExprMatched = matchExpr(SeedInst.getOperand(0), BasePtrToA, OuterMostPHIs);
+  bool ExprMatched = matchExpr(SeedInst.getOperand(0), BasePtrToA, BasePtrToB, OuterMostPHIs);
   if (!ExprMatched) {
     dbgs() << "! Failed to match expr.\n";
     return false;

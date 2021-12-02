@@ -1011,7 +1011,7 @@ inline bool matchExpr(const Value * seed, Value *&PtrOp, Value *&StorePtrOp, std
       dbgs() << "Constant (Leaf): "; v->print(dbgs()); dbgs() << "\n";
 
     } else if (match(v, matchStencilLoad(PtrOp, LoadIdxs))) {
-      if (lastPtrOp && StorePtrOp!=StorePtrOp && lastPtrOp != PtrOp) {
+      if (lastPtrOp && PtrOp!=StorePtrOp && lastPtrOp != PtrOp) {
         dbgs() << "! Multiple arrays being accessed.\n";
         return false;
       }

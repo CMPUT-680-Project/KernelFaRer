@@ -1176,9 +1176,9 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
               } else{
                 matchBounds = false;
               }
-              if (matchBounds) {
-                dbgs() << "Found a stencil!\n";
-              }
+            }
+            if (matchBounds) {
+              dbgs() << "Found a stencil!\n";
             }
         } else {
           continue;

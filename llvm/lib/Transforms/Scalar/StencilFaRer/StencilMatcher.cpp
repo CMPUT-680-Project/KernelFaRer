@@ -165,7 +165,10 @@ struct GetElementPtr_match {
         Value *PtrAsValue = Ptr.VR;
         if (Idxs.size() > i){
           std::vector<IdxTy> SubIdxs(Idxs.begin()+i, Idxs.end());
-          if(m_GetElementPtr(m_Value(OuterPtr), SubIdxs).match(PtrAsValue)){
+          if(m_OneOf(
+            m_GetElementPtr(m_Value(OuterPtr), SubIdxs),
+            m_Load(m_GetElementPtr(m_Value(OuterPtr), SubIdxs))
+          ).match(PtrAsValue)){
             Ptr.VR=OuterPtr;
           }
         }

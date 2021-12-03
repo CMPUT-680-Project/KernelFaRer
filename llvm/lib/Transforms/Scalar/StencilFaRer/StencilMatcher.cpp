@@ -150,9 +150,23 @@ struct GetElementPtr_match {
         Idxs[0].match(I->getOperand(N - 1))
       );
       if (Matched){
-        for(unsigned int i = 1; i < N - 1; i++){
+        bool SecondaryMatched = true;
+        unsigned int i;
+        for(i = 1; i < N - 1; i++){
           if(Idxs.size() > i){
-            Idxs[i].match(I->getOperand(N - 1 - i));
+            bool matchedCurrent = Idxs[i].match(I->getOperand(N - 1 - i));
+            if(!matchedCurrent){
+              SecondaryMatched = false;
+              break;
+            }
+          }
+        }
+        Value *OuterPtr = nullptr;
+        Value *PtrAsValue = Ptr.VR;
+        if (Idxs.size() > i){
+          std::vector<IdxTy> SubIdxs(Idxs.begin()+i, Idxs.end());
+          if(m_GetElementPtr(m_Value(OuterPtr), SubIdxs).match(PtrAsValue)){
+            Ptr.VR=OuterPtr;
           }
         }
         return true;
@@ -928,7 +942,7 @@ using LinearPhiReturn = llvm::PatternMatch::match_one_of<
         llvm::PatternMatch::specific_intval<false>, 29, true>>;
 inline LinearPhiReturn linearFunctionOf1PHI(
     PHINode *
-        &PHI) { // ! TODO: Generalize to many PHIs. Worklist algorithm again?
+        &PHI) {
   return m_OneOf(
       scaledPHIOrPHI(PHI),
       m_c_Add(scaledPHIOrPHI(PHI), m_ConstantInt()),

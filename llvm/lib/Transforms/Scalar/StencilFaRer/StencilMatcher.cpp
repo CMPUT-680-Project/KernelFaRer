@@ -144,8 +144,8 @@ PHINode *extractOutermostPHI(PHINode *const &V) {
 
     if (match(
             PHI,
-            m_OneOf(m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_ConstantInt()),
-                    m_PHI(m_ConstantInt(), m_c_Add(m_Specific(PHI), m_Value())),
+            m_OneOf(m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_Value()),
+                    m_PHI(m_Value(), m_c_Add(m_Specific(PHI), m_Value())),
                     m_PHI(m_ConstantInt(), m_ConstantInt()))))
       return const_cast<PHINode *>(PHI);
 

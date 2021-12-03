@@ -1,25 +1,12 @@
-//===- GEMMMatcher.cpp - Matrix-Multiply Recognition Pass -----------------===//
+//===- StencilMatcher.cpp - Stencil Recognition Pass ----------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-//
-// This pass implements an idiom recognizer that identifies matrix-multiply in
-// normalized loops. This pass is used by the GEMMReplacerPass to identify
-// Matrix-Multiplies that can be replaced by calls to llvm.matrix.multiply.*
-// intrinsics.
-//
-//===----------------------------------------------------------------------===//
-//
-// TODO List:
-//
-// Detect matrices with unknown sizes.
-// Support other data-types besides single and double precision floating-point.
-//
-//===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
@@ -74,112 +61,13 @@ inline PHI_match<InVal1Ty, InVal2Ty> m_PHI(InVal1Ty InVal1, InVal2Ty InVal2) {
   return PHI_match<InVal1Ty, InVal2Ty>(InVal1, InVal2);
 }
 
-/// Class that matches pointer operation (GEP, Load, Store), capturing the
-/// instruction and pointer.
-template <typename Class, typename OpTy> struct bind_val_and_ptr_op_ty {
-  Class *&VR;
-  OpTy Op1;
-
-  bind_val_and_ptr_op_ty(Class *&V, OpTy Op1) : VR(V), Op1(Op1) {}
-
-  template <typename ITy> bool match(ITy *V) {
-    auto *CV = dyn_cast<Class>(V);
-    if (CV && Op1.match(CV->getPointerOperand())) {
-      VR = CV;
-      return true;
-    }
-    return false;
-  }
-};
-
-/// Match a load, capturing the instruction and pointer if we match.
-template <typename OpTy>
-inline bind_val_and_ptr_op_ty<LoadInst, OpTy> m_LoadAndPtrOp(LoadInst *&Load,
-                                                             OpTy Op) {
-  return bind_val_and_ptr_op_ty<LoadInst, OpTy>(Load, Op);
+// Match a GEP, capturing it if we match.
+inline PatternMatch::bind_ty<GetElementPtrInst> m_GEP(GetElementPtrInst *&GEP) {
+  return GEP;
 }
-
-/// This helper class is used to match GEP instruction.
-/// Matches GetElementPointer instruction with pointer and first index, if
-/// NumIndexes == 1, and both last and second last indexes, otherwise.
-template <typename PtrTy, typename Idx1Ty,
-          typename Idx2Ty = PatternMatch::is_zero>
-struct GEP_match {
-  PtrTy Ptr;
-  Idx1Ty Idx1;
-  Idx2Ty Idx2;
-  bool HasIdx2;
-
-  GEP_match(const PtrTy &Ptr, const Idx1Ty &Idx1)
-      : Ptr(Ptr), Idx1(Idx1), Idx2(m_Zero()), HasIdx2(false) {}
-  GEP_match(const PtrTy &Ptr, const Idx1Ty &Idx1, const Idx2Ty &Idx2)
-      : Ptr(Ptr), Idx1(Idx1), Idx2(Idx2), HasIdx2(true) {}
-
-  template <typename OpTy> bool match(OpTy *V) {
-    auto Matched = false;
-    if (auto *I = dyn_cast<GetElementPtrInst>(V)) {
-      auto N = I->getNumOperands();
-      if (N > 2)
-        Matched = Ptr.match(I->getOperand(0)) &&
-                  Idx1.match(I->getOperand(N - 2)) &&
-                  Idx2.match(I->getOperand(N - 1));
-      else
-        Matched = Ptr.match(I->getOperand(0)) && Idx1.match(I->getOperand(1));
-    }
-    return Matched;
-  }
-};
-/// This helper class is used to match GEP instruction.
-/// Matches GetElementPointer instruction with pointer and first index, if
-/// NumIndexes == 1, and both last and second last indexes, otherwise.
-template <typename PtrTy, typename IdxTy>
-struct GetElementPtr_match {
-  PtrTy Ptr;
-  std::vector<IdxTy> Idxs;
-
-  GetElementPtr_match(
-    PtrTy &Ptr, 
-    std::vector<IdxTy> &Idxs
-    ): Ptr(Ptr), Idxs(Idxs) {}
-
-  template <typename OpTy> bool match(OpTy *V) {
-    if (auto *I = dyn_cast<GetElementPtrInst>(V)) {
-      auto N = I->getNumOperands();
-      bool Matched = (
-        Ptr.match(I->getOperand(0)) &&
-        Idxs[0].match(I->getOperand(N - 1))
-      );
-      if (Matched){
-        for(unsigned int i = 1; i < N - 1; i++){
-          if(Idxs.size() > i){
-            Idxs[i].match(I->getOperand(N - 1 - i));
-          }
-        }
-        return true;
-      }
-    }
-    return false;
-  }
-};
-
-/// Matches GetElementPtrInst's PointerOperand and first Index value.
-template <typename PtrTy, typename IdxTy>
-inline GetElementPtr_match<PtrTy, IdxTy> m_GetElementPtr(PtrTy Ptr, std::vector<IdxTy> Idxs) {
-  return GetElementPtr_match<PtrTy, IdxTy>(Ptr, Idxs);
-}
-
-/// Matches GetElementPtrInst's PointerOperand and first Index value.
-template <typename PtrTy, typename IdxTy>
-inline GEP_match<PtrTy, IdxTy> m_GEP(PtrTy Ptr, IdxTy Idx) {
-  return GEP_match<PtrTy, IdxTy>(Ptr, Idx);
-}
-
-/// Matches GetElementPtrInst's PointerOperand and both last and second last
-/// Index values.
-template <typename PtrTy, typename Idx1Ty, typename Idx2Ty>
-inline GEP_match<PtrTy, Idx1Ty, Idx2Ty> m_GEP(PtrTy Ptr, Idx1Ty Idx1,
-                                              Idx2Ty Idx2) {
-  return GEP_match<PtrTy, Idx1Ty, Idx2Ty>(Ptr, Idx1, Idx2);
+inline PatternMatch::bind_ty<const GetElementPtrInst>
+m_GEP(const GetElementPtrInst *&GEP) {
+  return GEP;
 }
 
 // Base classs for m_OneOf matcher.
@@ -204,7 +92,6 @@ template <typename Head, typename... List> struct match_one_of<Head, List...> {
     return Op.match(V) || Next.match(V);
   }
 };
-
 
 /// This helper class is used to or-combine a list of matchers.
 /// Matches one of the patterns in a list.
@@ -236,128 +123,8 @@ struct CombineOrWithReset_match {
   }
 };
 
-
-/// Matches Op1 or Op2, setting ValuesTy to nullptr if Op1 doesn't match
-template <typename Op1Ty, typename Op2Ty, typename... ValuesTy>
-inline CombineOrWithReset_match<Op1Ty, Op2Ty, ValuesTy...>
-m_CombineOrWithReset(const Op1Ty &Op1, const Op2Ty &Op2, ValuesTy... Values) {
-  return CombineOrWithReset_match<Op1Ty, Op2Ty, ValuesTy...>(Op1, Op2,
-                                                             Values...);
-}
-
 } // End namespace PatternMatch
 } // End namespace llvm
-
-// A helper function that returns a matcher of a (optionally scaled)
-// floating-point value. The return matcher matches expression in the form of
-// alpha * X  or Y, where * is FMul instruction.
-// TODO: add support for types other than floating-point
-template <typename OpTy>
-inline auto scaledValueOrValue(OpTy V, Value *&Scalar) {
-  return m_CombineOrWithReset(m_c_FMul(m_Value(Scalar), V), V, &Scalar);
-}
-
-// A helper function that returns a matcher of a linear function of two PHI
-// instructions in the form of PHI1 * LD + PHI2, where LD is the angular
-// coefficient of the linear function. The returned matcher captures both
-// matched PHI instructions (PHI1 & PHI2) and the angular coefficient value
-// (LD).
-inline auto linearFunctionOfPHI(PHINode *&PHI1, PHINode *&PHI2, Value *&LD) {
-  return m_CombineOr(
-      m_PHI(PHI1),
-      m_c_Add(m_CombineOr(m_c_Mul(m_PHI(PHI1),
-                                  m_OneOf(m_SExt(m_Value(LD)),
-                                          m_ZExt(m_Value(LD)), m_Value(LD))),
-                          m_Shl(m_PHI(PHI1), m_Value(LD))),
-              m_PHI(PHI2)));
-}
-
-// A helper function that returns a matcher of an integer product between a PHI
-// and a Value. The returned matcher captures both the PHINode (PHI) and the
-// Value (LD). The matcher matches expresions of the form PHI * LD, where PHI
-// is a PHINode and LD is a Value (optionally sign- or zero-extended).
-inline auto matchPHITimesLD(PHINode *&PHI, Value *&LD) {
-  return m_CombineOr(
-      m_c_Mul(m_PHI(PHI),
-              m_OneOf(m_SExt(m_Value(LD)), m_ZExt(m_Value(LD)), m_Value(LD))),
-      m_Shl(m_PHI(PHI), m_Value(LD)));
-}
-
-// A helper function that returns a matcher of a GEP instruction used to
-// compute the effective address of a flat-array (1D) or 2D-array. The returned
-// matcher captures the PointerOperand (Op), both PHINode instructions used to
-// compute the effective address (PHI1 & PHI2) and, if used, the leading
-// dimension value of the array (LD). The returned matcher accounts for
-// different pattern of IR that are generated when accessing flat or 2D
-// arrays.
-inline auto match1Dor2DPtrOpAndInductionVariables(Value *&Op, PHINode *&PHI1,
-                                                  PHINode *&PHI2, Value *&LD) {
-  return m_OneOf(
-      m_GEP(m_Load(m_GEP(m_Value(Op), m_PHI(PHI2))), m_PHI(PHI1)),
-      m_GEP(m_GEP(m_Value(Op), matchPHITimesLD(PHI1, LD)), m_PHI(PHI2)),
-      m_GEP(m_GEP(m_Value(Op), m_PHI(PHI2)), matchPHITimesLD(PHI1, LD)),
-      m_GEP(m_Value(Op), m_PHI(PHI1), m_PHI(PHI2)),
-      m_GEP(m_Value(Op), linearFunctionOfPHI(PHI1, PHI2, LD)));
-}
-
-// A helper function that returns a matcher of a load to flat or 2D array. The
-// returned matcher uses the match1Dor2DPtrOpAndInductionVariables helper
-// function's return as a sub-matcher.
-inline auto match1Dor2DLoadAndIndices(Value *&PtrOp, PHINode *&Idx1,
-                                      PHINode *&Idx2, Value *&LD) {
-  return m_Load(match1Dor2DPtrOpAndInductionVariables(PtrOp, Idx1, Idx2, LD));
-}
-
-template <typename MulLHSTy, typename MulRHSTy>
-inline auto floatMultiplyWithScalar(MulLHSTy MulLHS, MulRHSTy MulRHS,
-                                    Value *&Scalar) {
-  return m_CombineOr(m_c_FMul(scaledValueOrValue(MulLHS, Scalar), MulRHS),
-                     m_c_FMul(m_Value(Scalar), m_c_FMul(MulLHS, MulRHS)));
-}
-
-// A helper function that returns a matcher of a floating-point
-// multiply-accumulate pattern involving two arrays. The returned matcher
-// captures both multiplied arrays (MulLHS & MulRHS), the PHINode instructions
-// used as indexes into each array (IdxA1/2 & IdxB1/2) and, if part of the
-// indexing expression, the leading dimension of each array.
-// TODO: add support for types other than floating-point
-inline auto matchFMulFAddPattern(Value *&MulLHS, Value *&MulRHS,
-                                 PHINode *&IdxA1, PHINode *&IdxA2,
-                                 PHINode *&IdxB1, PHINode *&IdxB2, Value *&LDA,
-                                 Value *&LDB, Value *&Alpha) {
-  auto LHS = match1Dor2DLoadAndIndices(MulLHS, IdxA1, IdxA2, LDA);
-  auto RHS = match1Dor2DLoadAndIndices(MulRHS, IdxB1, IdxB2, LDB);
-  return m_c_FAdd(m_Value(), floatMultiplyWithScalar(LHS, RHS, Alpha));
-}
-
-// A helper function that returns a matcher of a store into a flat or 2D array
-// C of the result of a reduction pattern matched by ReductionMatcher.
-template <typename MatcherType>
-inline auto matchStoreOfMatrixC(MatcherType ReductionMatcher, Value *&C,
-                                PHINode *&IdxC1, PHINode *&IdxC2, Value *&LDC,
-                                Value *&GEP, Value *&Alpha, Value *&Beta) {
-  return m_Store(
-      m_OneOf(scaledValueOrValue(ReductionMatcher, Alpha),
-              scaledValueOrValue(m_PHI(m_Value(), ReductionMatcher), Beta),
-              m_c_FAdd(scaledValueOrValue(m_Load(m_Value(GEP)), Beta),
-                       scaledValueOrValue(
-                           m_CombineOr(m_PHI(m_Zero(), ReductionMatcher),
-                                       ReductionMatcher),
-                           Alpha))),
-      match1Dor2DPtrOpAndInductionVariables(C, IdxC1, IdxC2, LDC));
-}
-
-// A helper function that returns a matcher of a store into a flat or 2D array
-// C of the result of a reduction pattern matched by ReductionMatcher.
-inline auto matchSYR2KStore(const Value *C, Value *&AddLHS, Value *&AddRHS) {
-  return m_CombineOr(
-      m_Store(m_c_FAdd(m_PHI(m_Value(), m_Value()),
-                       m_c_FAdd(m_Value(AddLHS), m_Value(AddRHS))),
-              m_Specific(C)),
-      m_Store(m_c_FAdd(m_Load(m_Specific(C)),
-                       m_c_FAdd(m_Value(AddLHS), m_Value(AddRHS))),
-              m_Specific(C)));
-}
 
 // A helper function that returns the outermost PHINode (induction variable)
 // associated with V. The outermost induction variable has two incomming
@@ -377,8 +144,8 @@ PHINode *extractOutermostPHI(PHINode *const &V) {
 
     if (match(
             PHI,
-            m_OneOf(m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_Value()),
-                    m_PHI(m_Value(), m_c_Add(m_Specific(PHI), m_Value())),
+            m_OneOf(m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_ConstantInt()),
+                    m_PHI(m_ConstantInt(), m_c_Add(m_Specific(PHI), m_Value())),
                     m_PHI(m_ConstantInt(), m_ConstantInt()))))
       return const_cast<PHINode *>(PHI);
 
@@ -391,7 +158,7 @@ PHINode *extractOutermostPHI(PHINode *const &V) {
 
 // A helper function that the inserts in Loops list the innermost loop nested
 // in L, or L itself if L does not have sub-loops.
-static void collecInnermostLoops(const Loop *L,
+static void collectInnermostLoops(const Loop *L,
                                  SmallSetVector<const Loop *, 8> &Loops) {
   SmallSetVector<const Loop *, 8> WorkQueue;
 
@@ -418,48 +185,15 @@ static void collecInnermostLoops(const Loop *L,
 }
 
 // A helper function that collects into Loops all loops in a function that are
-// nested at level 3 or deeper
-static void
-collectLoopsWithDepthThreeOrDeeper(LoopInfo &LI,
-                                   SmallSetVector<const Loop *, 8> &Loops) {
-  for (auto *L : LI.getLoopsInPreorder())
-    if (L->getLoopDepth() > 2 && Loops.count(L) == 0)
-      collecInnermostLoops(L, Loops);
-}
-
+// nested at level 1 or deeper
 static void
 collectLoopsWithDepthOneOrDeeper(LoopInfo &LI,
-                                   SmallSetVector<const Loop *, 8> &Loops) {
-  for (auto *L : LI.getLoopsInPreorder()){
-    if (Loops.count(L) == 0){
-      collecInnermostLoops(L, Loops);
+                                 SmallSetVector<const Loop *, 8> &Loops) {
+  for (auto *L : LI.getLoopsInPreorder()) {
+    if (Loops.count(L) == 0) {
+      collectInnermostLoops(L, Loops);
     }
   }
-}
-
-// TODO: Loop induction variable might no being identified
-
-// A helper function that returns true iff. either the first or the second
-// operand of PHINode PHI matches the pattern described by matcher. If PHI has
-// more than two operand or none operands matched then this function returns
-// false. When true is returned the incoming argument AltValue is set to which
-// ever operand did *NOT* match the pattern described by matcher.
-template <typename MatcherTy>
-bool match1stOr2ndPHIOperand(const PHINode *&PHI, MatcherTy Matcher,
-                             Value *&AltValue) {
-  if (PHI->getNumOperands() == 2) {
-    Value *Op0 = PHI->getOperand(0);
-    Value *Op1 = PHI->getOperand(1);
-    bool Matched = true;
-    if (match(Op0, Matcher))
-      AltValue = Op1;
-    else if (match(Op1, Matcher))
-      AltValue = Op0;
-    else
-      Matched = false;
-    return Matched;
-  }
-  return false;
 }
 
 // A helper function that tries to find the upper bound (UBound) of a loop
@@ -525,17 +259,16 @@ static bool matchLoopUpperBound(LoopInfo &LI, PHINode *IndVar, Value *&UBound) {
 
 // A helper function that tries to find the lower bound (LBound) of a loop
 // associated with the induction variable (IndVar). If the lower bound is found,
-// then this function returns true and sets the incoming argument LBound to 
+// then this function returns true and sets the incoming argument LBound to
 // whichever value the loop associated with IndVar has. Otherwise, this function
-// returns false and sets LBound to nullptr. 
+// returns false and sets LBound to nullptr.
 static bool matchLoopLowerBound(LoopInfo &LI, PHINode *IndVar, Value *&LBound) {
-  auto LBoundMatcher = m_OneOf(m_ZExt(m_Value(LBound)),
-                              m_SExt(m_Value(LBound)),
-                              m_Value(LBound));
-  if (match(IndVar,
-        m_OneOf(m_PHI(m_c_Add(m_Specific(IndVar), m_Value()), LBoundMatcher),
-                m_PHI(LBoundMatcher, m_c_Add(m_Specific(IndVar), m_Value()))
-                ))) {
+  auto LBoundMatcher = m_OneOf(m_ZExt(m_Value(LBound)), m_SExt(m_Value(LBound)),
+                               m_Value(LBound));
+  if (match(IndVar, m_OneOf(m_PHI(m_c_Add(m_Specific(IndVar), m_Value()),
+                                  LBoundMatcher),
+                            m_PHI(LBoundMatcher,
+                                  m_c_Add(m_Specific(IndVar), m_Value()))))) {
     return true;
   } else {
     LBound = nullptr;
@@ -543,12 +276,13 @@ static bool matchLoopLowerBound(LoopInfo &LI, PHINode *IndVar, Value *&LBound) {
   }
 }
 
-// A helper function that returns the outer loop associated with one of the
-static Loop *getOuterLoop(LoopInfo &LI, const std::vector<PHINode *> &IVars) { // ! TODO: Generalize to any number of induction vars
-  Loop * outer = nullptr;
+// A helper function that returns the outermost loop associated with one of
+// the incoming induction variables in IVar.
+static Loop *getOuterLoop(LoopInfo &LI, const SmallVector<Value *, 3> &IVars) {
+  Loop *outer = nullptr;
   unsigned int min_depth = UINT_MAX;
   for (auto *iv : IVars) {
-    auto *l = LI.getLoopFor(static_cast<const PHINode *>(iv)->getParent());
+    Loop *l = LI.getLoopFor(static_cast<const PHINode *>(iv)->getParent());
     unsigned int depth = l->getLoopDepth();
     if (depth < min_depth) {
       min_depth = depth;
@@ -558,507 +292,143 @@ static Loop *getOuterLoop(LoopInfo &LI, const std::vector<PHINode *> &IVars) { /
   return outer;
 }
 
-// A helper function that detects which access order (Layout) each matrix (A,
-// B, and C) is used based on the induction variables A1/2, B1/2, and C1/2. The
-// matrices involved in a GEMM of the form C += alpha * A * B + beta * C can
-// only be accessed in the following combinations of access order (RM =
-// Row-Major and CM = Column-Major):
-//
-//      |  C |  A |  B |
-//      | RM | RM | RM |
-//      | CM | RM | RM |
-//      | RM | CM | RM |
-//      | CM | CM | RM |
-//      | RM | RM | CM |
-//      | CM | RM | CM |
-//      | RM | CM | CM |
-//      | CM | CM | CM |
-//
-// If the access order is not one listed above then this function returns
-// false, since their respective accesses are not part of a GEMM. Otherwise,
-// this function returns true and ALayout, BLayout, and CLayout accordingly.
-bool matchMatrixLayout(PHINode *&A1, PHINode *&A2, PHINode *&B1, PHINode *&B2,
-                       PHINode *&C1, PHINode *&C2, CBLAS_ORDER &ALayout,
-                       CBLAS_ORDER &BLayout, CBLAS_ORDER &CLayout, Value *&I,
-                       Value *&J, Value *&K, LoopInfo &LI) {
-  if (A1 == nullptr || A2 == nullptr || B1 == nullptr || B2 == nullptr ||
-      C1 == nullptr || C2 == nullptr)
-    return false;
-  bool Matched = true;
-  A1 = extractOutermostPHI(A1);
-  A2 = extractOutermostPHI(A2);
-  B1 = extractOutermostPHI(B1);
-  B2 = extractOutermostPHI(B2);
-  C1 = extractOutermostPHI(C1);
-  C2 = extractOutermostPHI(C2);
-  PHINode *II = nullptr;
-  PHINode *JJ = nullptr;
-  PHINode *KK = nullptr;
-  if (A1 == B1) {
-    II = A2;
-    JJ = B2;
-    KK = A1;
-    ALayout = CBLAS_ORDER::ColMajor;
-    BLayout = CBLAS_ORDER::RowMajor;
-    if (A2 == C1 && B2 == C2)
-      CLayout = CBLAS_ORDER::RowMajor;
-    else if (A2 == C2 && B2 == C1)
-      CLayout = CBLAS_ORDER::ColMajor;
-    else
-      // Not GEMM
-      Matched = false;
-  } else if (A1 == B2) {
-    II = A2;
-    JJ = B1;
-    KK = A1;
-    ALayout = CBLAS_ORDER::ColMajor;
-    BLayout = CBLAS_ORDER::ColMajor;
-    if (A2 == C1 && B1 == C2)
-      CLayout = CBLAS_ORDER::RowMajor;
-    else if (A2 == C2 && B1 == C1)
-      CLayout = CBLAS_ORDER::ColMajor;
-    else {
-      // Not GEMM
-      Matched = false;
-    }
-  } else if (A2 == B1) {
-    II = A1;
-    JJ = B2;
-    KK = A2;
-    ALayout = CBLAS_ORDER::RowMajor;
-    BLayout = CBLAS_ORDER::RowMajor;
-    if (A1 == C1 && B2 == C2)
-      CLayout = CBLAS_ORDER::RowMajor;
-    else if (A1 == C2 && B2 == C1)
-      CLayout = CBLAS_ORDER::ColMajor;
-    else {
-      // Not GEMM
-      Matched = false;
-    }
-  } else if (A2 == B2) {
-    II = A1;
-    JJ = B1;
-    KK = A2;
-    ALayout = CBLAS_ORDER::RowMajor;
-    BLayout = CBLAS_ORDER::ColMajor;
-    if (A1 == C1 && B1 == C2)
-      CLayout = CBLAS_ORDER::RowMajor;
-    else if (A1 == C2 && B1 == C1)
-      CLayout = CBLAS_ORDER::ColMajor;
-    else {
-      // Not GEMM
-      Matched = false;
-    }
-  } else {
-    // Not GEMM
-    Matched = false;
-  }
-  if (Matched) {
-    auto DepthI = LI.getLoopDepth(II->getParent());
-    auto DepthJ = LI.getLoopDepth(JJ->getParent());
-    auto DepthK = LI.getLoopDepth(KK->getParent());
-    if (DepthI != DepthJ && DepthJ != DepthK && DepthI != DepthK) {
-      I = II;
-      J = JJ;
-      K = KK;
-    } else {
-      // Not GEMM
-      Matched = false;
-    }
-  }
-  return Matched;
-}
-
-static bool matchSyr2kIndVarAndLayout(Value *const &PtrToA, Value *&PtrToA2,
-                                      Value *const &PtrToB, Value *&PtrToB2,
-                                      SmallVector<PHINode *, 4> &APHI,
-                                      SmallVector<PHINode *, 4> &BPHI,
-                                      CBLAS_ORDER ALayout,
-                                      CBLAS_ORDER BLayout) {
-
-  // If RHS matched B as A and A as B, then we swap the matched induction
-  // variables and pointers.
-  if (PtrToA == PtrToB2 && PtrToB == PtrToA2) {
-    std::swap(APHI[2], BPHI[2]);
-    std::swap(APHI[3], BPHI[3]);
-    std::swap(PtrToA2, PtrToB2);
-  } else if (PtrToA != PtrToA2 || PtrToB != PtrToB2) {
-    // If RHS' pointers do not match LHS' pointers, then this is not a Syr2k.
-    return false;
-  }
-
-  if (ALayout == BLayout) {
-    if (APHI[0] == BPHI[3] && APHI[1] == BPHI[2] && BPHI[0] == APHI[3] &&
-        BPHI[1] == APHI[2])
-      return true;
-  } else if (APHI[0] == BPHI[2] && APHI[1] == BPHI[3] && BPHI[0] == APHI[2] &&
-             BPHI[1] == APHI[3])
-    return true;
-
-  return false;
-}
-
-// A helper function that returns true iff. SeedInst is a store instruction
-// that belongs to a Matrix-Multiply pattern. Otherwise this function returns
-// false. When this function returns true all incoming arguments (except
-// SeedInst) are set to capture values in the IR that describe the
-// Matrix-Multiply.
-static bool matchGEMM(Instruction &SeedInst, Value *&IVarI, Value *&IVarJ,
-                      Value *&IVarK, Value *&BasePtrToA, Value *&BasePtrToB,
-                      Value *&BasePtrToC, Value *&LDA, Value *&LDB, Value *&LDC,
-                      CBLAS_ORDER &ALayout, CBLAS_ORDER &BLayout,
-                      CBLAS_ORDER &CLayout, LoopInfo &LI, Value *&Alpha,
-                      Value *&Beta, bool &IsCReduced) {
-  auto *SeedInstAsValue = static_cast<Value *>(&SeedInst);
-  Value *Alpha1 = nullptr;
-  PHINode *APHI1 = nullptr;
-  PHINode *APHI2 = nullptr;
-  PHINode *BPHI1 = nullptr;
-  PHINode *BPHI2 = nullptr;
-  PHINode *CPHI1 = nullptr;
-  PHINode *CPHI2 = nullptr;
-  const auto *LoadPtrOp = SeedInst.getOperand(1);
-  Value *MatchedGEP = nullptr;
-
-  // MatMul matcher
-  auto ReductionMatcher = matchFMulFAddPattern(
-      BasePtrToA, BasePtrToB, APHI1, APHI2, BPHI1, BPHI2, LDA, LDB, Alpha);
-  auto Matcher = matchStoreOfMatrixC(ReductionMatcher, BasePtrToC, CPHI1, CPHI2,
-                                     LDC, MatchedGEP, Alpha1, Beta);
-
-  bool IsGEMM = false;
-  if (match(SeedInstAsValue, Matcher) && BasePtrToA != BasePtrToC &&
-      BasePtrToB != BasePtrToC &&
-      // prevents the match of double scaling with alpha
-      (Alpha == nullptr || Alpha1 == nullptr) &&
-      // LoadPtrOP equals MatchedGEP when old values of C is part of reduction,
-      // i.e., when we have expressions of the form:
-      // C = alpha? * A * B + beta? * C
-      (MatchedGEP == nullptr || MatchedGEP == LoadPtrOp) &&
-      matchMatrixLayout(APHI1, APHI2, BPHI1, BPHI2, CPHI1, CPHI2, ALayout,
-                        BLayout, CLayout, IVarI, IVarJ, IVarK, LI)) {
-    // If Alpha is not match with the reduction matcher, use the matched value
-    // from the store matcher.
-    if (Alpha == nullptr)
-      Alpha = Alpha1;
-    IsCReduced = MatchedGEP != nullptr || Beta != nullptr;
-    IsGEMM = true;
-  }
-  return IsGEMM;
-}
-
-static bool matchSYR2K(Instruction &SeedInst, Value *&IVarI, Value *&IVarJ,
-                       Value *&IVarK, Value *&BasePtrToA, Value *&BasePtrToB,
-                       Value *&BasePtrToC, Value *&LDA, Value *&LDB,
-                       Value *&LDC, CBLAS_ORDER &ALayout, CBLAS_ORDER &BLayout,
-                       CBLAS_ORDER &CLayout, Value *&Alpha, Value *&Beta,
-                       LoopInfo &LI) {
-  Value *SeedInstAsValue = static_cast<Value *>(&SeedInst);
-  Value *AddLHS = nullptr;
-  Value *AddRHS = nullptr;
-  SmallVector<PHINode *, 4> APHI = {nullptr, nullptr, nullptr, nullptr};
-  SmallVector<PHINode *, 4> BPHI = {nullptr, nullptr, nullptr, nullptr};
-  PHINode *CPHI1 = nullptr;
-  PHINode *CPHI2 = nullptr;
-  Value *BasePtrToA2 = nullptr;
-  Value *BasePtrToB2 = nullptr;
-  Value *LDA2 = nullptr;
-  Value *LDB2 = nullptr;
-  Value *Alpha1 = nullptr;
-  Value *StoreToC = SeedInst.getOperand(1);
-
-  auto StoreMatcher = matchSYR2KStore(StoreToC, AddLHS, AddRHS);
-
-  auto AddLHSMatcher = floatMultiplyWithScalar(
-      match1Dor2DLoadAndIndices(BasePtrToA, APHI[0], APHI[1], LDA),
-      match1Dor2DLoadAndIndices(BasePtrToB, BPHI[0], BPHI[1], LDB), Alpha);
-
-  auto AddRHSMatcher = floatMultiplyWithScalar(
-      match1Dor2DLoadAndIndices(BasePtrToA2, APHI[2], APHI[3], LDA2),
-      match1Dor2DLoadAndIndices(BasePtrToB2, BPHI[2], BPHI[3], LDB2), Alpha1);
-
-  bool IsSYR2K = false;
-  if (match(SeedInstAsValue, StoreMatcher) &&
-      match(StoreToC, match1Dor2DPtrOpAndInductionVariables(BasePtrToC, CPHI1,
-                                                            CPHI2, LDC)) &&
-      match(AddLHS, AddLHSMatcher) &&
-      matchMatrixLayout(APHI[0], APHI[1], BPHI[0], BPHI[1], CPHI1, CPHI2,
-                        ALayout, BLayout, CLayout, IVarI, IVarJ, IVarK, LI) &&
-      match(AddRHS, AddRHSMatcher) &&
-      matchSyr2kIndVarAndLayout(BasePtrToA, BasePtrToA2, BasePtrToB,
-                                BasePtrToB2, APHI, BPHI, ALayout, BLayout))
-    IsSYR2K = true;
-  return IsSYR2K;
-}
-
-// inline auto matchStencilStore(const Value *C, Value *&AddLHS, Value *&AddRHS) {
-//   return m_Store(m_c_FAdd(m_Value(AddLHS), m_Value(AddRHS)), m_Specific(C)); // Match any store of the result of float addition.
-// }
-
-// static bool match1DStencil(Instruction &SeedInst) {
-//   auto *SeedInstAsValue = static_cast<Value *>(&SeedInst);
-//   auto *StoreToC = SeedInst.getOperand(1);
-//   Value *AddLHS = nullptr;
-//   Value *AddRHS = nullptr;
-//   auto StencilStoreMatcher = matchStencilStore(StoreToC, AddLHS, AddRHS); // Match stores to C as result of float addition
-//   if (match(SeedInstAsValue, StencilStoreMatcher)) {
-//     return true;
-//   }
-//   return false;
-// }
-
-// A Helper function to get leading dimension value. In case V is the RHS of a
-// Shl instruction, V is set to 1 << V. Otherwise V is unchanged.
-void setLeadingDimensionValue0(BasicBlock &FunEntryBB, Loop &L,
-                              Value *const &IndVarA, Value *const &IndVarB,
-                              Value *&V) {
-  for (auto *User : V->users()) {
-    auto *Inst = dyn_cast_or_null<Instruction>(User);
-    if (Inst != nullptr && L.contains(Inst->getParent()) &&
-        match(User, m_Shl(m_CombineOr(m_Specific(IndVarA), m_Specific(IndVarB)),
-                          m_Specific(V)))) {
-      // Matched V is the RHS of a Shl instruction,
-      // then actual V = 1 << matched(V)
-      IRBuilder<> IR(&FunEntryBB);
-      V = IR.CreateShl(IR.getInt64(1), V);
-      break;
-    }
-  }
-}
-
-// A helper function that collects iniatialization stores to matrix C. This
-// function adds to \p Stores all the store instructions that store the value 0
-// to matrix C, which has base address \p C, in the effective address computed
-// with \p LDC, IVarI, and IVarJ that are within loop \p L.
-static void collectOtherKernelStoresToC(
-    const Value *C, const Value *LDC, const Value *IVarI, const Value *IVarJ,
-    const Value *Alpha, const Value *Beta, const Loop *L,
-    const Instruction &ReductionStore, DominatorTree &DT,
-    SmallSetVector<const Value *, 2> &Stores, bool &IsCReduced) {
-  const auto *ReductionBB = ReductionStore.getParent();
-  for (auto *BB : L->getBlocks()) {
-    for (auto Inst = BB->begin(); Inst != BB->end(); Inst++) {
-      if (isa<StoreInst>(Inst)) {
-        auto *InstAsValue = static_cast<Value *>(&*Inst);
-        Value *C1 = nullptr;
-        Value *LDC1 = nullptr;
-        PHINode *PHI1 = nullptr;
-        PHINode *PHI2 = nullptr;
-        Value *Alpha1 = nullptr;
-        Value *Beta1 = nullptr;
-        Value *GEP = Inst->getOperand(1);
-        auto StoreMatcher = m_Store(
-            m_OneOf(m_Constant(), scaledValueOrValue(m_Zero(), Alpha1),
-                    scaledValueOrValue(m_Load(m_Specific(GEP)), Beta1),
-                    m_c_FAdd(scaledValueOrValue(m_Load(m_Specific(GEP)), Beta1),
-                             scaledValueOrValue(m_Zero(), Alpha1))),
-            match1Dor2DPtrOpAndInductionVariables(C1, PHI1, PHI2, LDC1));
-        if (match(InstAsValue, StoreMatcher) && C == C1 &&
-            (LDC1 == nullptr || LDC1 == LDC) &&
-            ((Alpha == nullptr || Alpha1 == nullptr) || Alpha == Alpha1) &&
-            ((Beta == nullptr || Beta1 == nullptr) || Beta == Beta1) &&
-            (IVarI == extractOutermostPHI(PHI1) ||
-             IVarI == extractOutermostPHI(PHI2) ||
-             IVarJ == extractOutermostPHI(PHI1) ||
-             IVarJ == extractOutermostPHI(PHI2)) &&
-            DT.dominates(BB, ReductionBB) && BB != ReductionBB) {
-          if (Beta1 != nullptr)
-            IsCReduced = true;
-          Stores.insert(InstAsValue);
-        }
-      }
-    }
-  }
-}
-
 inline auto scaledPHIOrPHI(PHINode *&PHI) {
-  return m_CombineOr(
-      m_PHI(PHI),
-      m_OneOf(m_c_Mul(m_PHI(PHI), m_ConstantInt()),
-                m_Shl(m_PHI(PHI), m_ConstantInt()),
-                m_Shr(m_PHI(PHI), m_ConstantInt())));
-}
-using LinearPhiReturn = llvm::PatternMatch::match_one_of<
-    llvm::PatternMatch::match_combine_or<
-        llvm::PatternMatch::bind_ty<llvm::PHINode>,
-        llvm::PatternMatch::match_one_of<
-            llvm::PatternMatch::BinaryOp_match<
-                llvm::PatternMatch::bind_ty<llvm::PHINode>,
-                llvm::PatternMatch::class_match<llvm::ConstantInt>, 17, true>,
-            llvm::PatternMatch::BinaryOp_match<
-                llvm::PatternMatch::bind_ty<llvm::PHINode>,
-                llvm::PatternMatch::class_match<llvm::ConstantInt>, 25, false>,
-            llvm::PatternMatch::BinOpPred_match<
-                llvm::PatternMatch::bind_ty<llvm::PHINode>,
-                llvm::PatternMatch::class_match<llvm::ConstantInt>,
-                llvm::PatternMatch::is_right_shift_op>>>,
-    llvm::PatternMatch::BinaryOp_match<
-        llvm::PatternMatch::match_combine_or<
-            llvm::PatternMatch::bind_ty<llvm::PHINode>,
-            llvm::PatternMatch::match_one_of<
-                llvm::PatternMatch::BinaryOp_match<
-                    llvm::PatternMatch::bind_ty<llvm::PHINode>,
-                    llvm::PatternMatch::class_match<llvm::ConstantInt>, 17,
-                    true>,
-                llvm::PatternMatch::BinaryOp_match<
-                    llvm::PatternMatch::bind_ty<llvm::PHINode>,
-                    llvm::PatternMatch::class_match<llvm::ConstantInt>, 25,
-                    false>,
-                llvm::PatternMatch::BinOpPred_match<
-                    llvm::PatternMatch::bind_ty<llvm::PHINode>,
-                    llvm::PatternMatch::class_match<llvm::ConstantInt>,
-                    llvm::PatternMatch::is_right_shift_op>>>,
-        llvm::PatternMatch::class_match<llvm::ConstantInt>, 13, true>,
-    llvm::PatternMatch::BinaryOp_match<
-        llvm::PatternMatch::match_combine_or<
-            llvm::PatternMatch::bind_ty<llvm::PHINode>,
-            llvm::PatternMatch::match_one_of<
-                llvm::PatternMatch::BinaryOp_match<
-                    llvm::PatternMatch::bind_ty<llvm::PHINode>,
-                    llvm::PatternMatch::class_match<llvm::ConstantInt>, 17,
-                    true>,
-                llvm::PatternMatch::BinaryOp_match<
-                    llvm::PatternMatch::bind_ty<llvm::PHINode>,
-                    llvm::PatternMatch::class_match<llvm::ConstantInt>, 25,
-                    false>,
-                llvm::PatternMatch::BinOpPred_match<
-                    llvm::PatternMatch::bind_ty<llvm::PHINode>,
-                    llvm::PatternMatch::class_match<llvm::ConstantInt>,
-                    llvm::PatternMatch::is_right_shift_op>>>,
-        llvm::PatternMatch::specific_intval<false>, 29, true>>;
-inline LinearPhiReturn linearFunctionOf1PHI(
-    PHINode *
-        &PHI) { // ! TODO: Generalize to many PHIs. Worklist algorithm again?
-  return m_OneOf(
-      scaledPHIOrPHI(PHI),
-      m_c_Add(scaledPHIOrPHI(PHI), m_ConstantInt()),
-      m_c_Or(scaledPHIOrPHI(PHI), m_SpecificInt(1)));
+  return m_CombineOr(m_PHI(PHI), m_OneOf(m_c_Mul(m_PHI(PHI), m_ConstantInt()),
+                                         m_Shl(m_PHI(PHI), m_ConstantInt()),
+                                         m_Shr(m_PHI(PHI), m_ConstantInt())));
 }
 
-inline auto matchPtrOpAndInductionVariable(Value *&Op, PHINode *&PHI) {
-  return m_GEP(m_Value(Op), linearFunctionOf1PHI(PHI));
+inline auto linearFunctionOfPHI(PHINode *&PHI) {
+  return m_OneOf(scaledPHIOrPHI(PHI),
+                 m_c_Add(scaledPHIOrPHI(PHI), m_ConstantInt()),
+                 m_c_Or(scaledPHIOrPHI(PHI), m_SpecificInt(1)));
 }
 
-inline auto matchPtrOpAndInductionVariableVector(Value *&Op, std::vector<PHINode *> &PHIVector) {
-  std::vector<LinearPhiReturn> PHIFunctions={};
-  for (size_t i = 0; i < PHIVector.size(); i++) {
-    PHIFunctions.push_back(linearFunctionOf1PHI(PHIVector[i]));
-  }
-
-  return m_GetElementPtr(m_Value(Op), PHIFunctions);
-}
-
-// // This wrapper is kind of hacky, but was not sure how else to get types to work
-// inline auto matchPtrOpAndInductionVariableVector(Value *&Op, std::vector<PHINode *> &PHIVector) {
-//   return matchPtrOpAndInductionVariableVector(Op, PHIVector, linearFunctionOf1PHI(PHIVector[0]));
-// }
-
-inline auto matchStencilLoad(Value *&PtrOp, std::vector<PHINode *> &Idxs) {
-  return m_Load(matchPtrOpAndInductionVariableVector(PtrOp, Idxs));
-}
-
-inline auto matchStencilStore(Value *&PtrOp, Value *&ValueStored, std::vector<PHINode *> &Idxs) {
-  return m_Store(m_Value(ValueStored),matchPtrOpAndInductionVariableVector(PtrOp, Idxs));
-}
-
-inline bool PHIVectorsMatch(std::vector<PHINode *> &PHIVectorA, std::vector<PHINode *> &PHIVectorB) {
-  if (PHIVectorA.size() != PHIVectorB.size())
+inline bool matchArrayLoad(const Value *Inst, Value *&BasePtrOp,
+                           SmallVector<PHINode *, 3> &PHIs) {
+  GetElementPtrInst *PtrOp;
+  if (!match(Inst, m_Load(m_GEP(PtrOp))))
     return false;
-  for(size_t i = 0; i < PHIVectorA.size(); i++) {
-    if (PHIVectorA[i] != PHIVectorB[i])
-      return false;
-  }
+  do {
+    auto N = PtrOp->getNumOperands();
+    for (size_t i = 1; i < N; ++i) {
+      PHINode *phi;
+      if (match(PtrOp->getOperand(N - i), linearFunctionOfPHI(phi)))
+        PHIs.push_back(phi);
+      else
+        return false;
+    }
+  } while (match(PtrOp->getPointerOperand(),
+                 m_CombineOr(m_Load(m_GEP(PtrOp)), m_GEP(PtrOp))));
+  BasePtrOp = PtrOp;
   return true;
 }
 
-std::vector<PHINode *> toOuterMostPHIs(std::vector<PHINode *> &PHIVector) {
-  std::vector<PHINode *> OutPhis = {};
-  for(auto Phi: PHIVector) {
-    OutPhis.push_back(extractOutermostPHI(Phi));
-  }
-  return OutPhis;
+static bool matchArrayStore(const Value *Inst, Value *&BasePtrOp, 
+                            SmallVector<PHINode *, 3> &PHIs, Value *&ValueOp) {
+  GetElementPtrInst *PtrOp;
+  if (!match(Inst, m_Store(m_Value(ValueOp), m_GEP(PtrOp))))
+    return false;
+  do {
+    auto N = PtrOp->getNumOperands();
+    for (size_t i = 1; i < N; ++i) {
+      PHINode *phi;
+      if (match(PtrOp->getOperand(N - i), m_PHI(phi)))
+        PHIs.push_back(phi);
+      else
+        return false;
+    }
+  } while (match(PtrOp->getPointerOperand(),
+                 m_CombineOr(m_Load(m_GEP(PtrOp)), m_GEP(PtrOp))));
+  BasePtrOp = PtrOp;
+  return true;
 }
 
-// PtrOp: stencil pattern array
-// Idx: induction variable
-inline bool matchExpr(const Value * seed, Value *&PtrOp, Value *&StorePtrOp, std::vector<PHINode *> &OuterMostStoreIdxs) {
+inline bool matchExpr(const Value *seed, Value *&InPtr, const Value *OutPtr,
+                      const SmallVector<PHINode *, 3> &PHIs) {
   dbgs() << "[expr]\n";
   SmallSetVector<const Value *, 8> WorkQueue;
   WorkQueue.insert(seed);
 
-  Value *lastPtrOp = nullptr;
-  std::vector<PHINode *> LoadIdxs(OuterMostStoreIdxs.size(),nullptr);
-  std::vector<PHINode *> OuterMostLoadIdxs;
+  Value *BinLHS;
+  Value *BinRHS;
+  Value *UnArg;
+  Value *LoadPtr;
+  SmallVector<PHINode *, 3> LoadPHIs;
 
   while (!WorkQueue.empty()) {
     const auto *v = WorkQueue.front();
     WorkQueue.remove(v);
 
-    Value *BinLHS = nullptr;
-    Value *BinRHS = nullptr;
-    Value *UnArg = nullptr;
-
     if (match(v, m_c_BinOp(m_Value(BinLHS), m_Value(BinRHS)))) {
-      dbgs() << "BinOp: "; v->print(dbgs()); dbgs() << "\n";
+      dbgs() << "BinOp: ";
+      v->print(dbgs());
+      dbgs() << "\n";
       WorkQueue.insert(BinLHS);
       WorkQueue.insert(BinRHS);
 
     } else if (match(v, m_UnOp(m_Value(UnArg)))) {
-      dbgs() << "UnOp: "; v->print(dbgs()); dbgs() << "\n";
+      dbgs() << "UnOp: ";
+      v->print(dbgs());
+      dbgs() << "\n";
       WorkQueue.insert(UnArg);
 
     } else if (match(v, m_Constant())) {
-      dbgs() << "Constant (Leaf): "; v->print(dbgs()); dbgs() << "\n";
-
-    } else if (match(v, matchStencilLoad(PtrOp, LoadIdxs))) {
-      if (lastPtrOp && PtrOp!=StorePtrOp && lastPtrOp != PtrOp) {
-        dbgs() << "! Multiple arrays being accessed.\n";
-        return false;
-      }
-      OuterMostLoadIdxs = toOuterMostPHIs(LoadIdxs);
-      if (!PHIVectorsMatch(OuterMostStoreIdxs, OuterMostLoadIdxs)) {
-        dbgs() << "! Load doesn't match store induction vars.\n";
-        return false;
-      }
-      dbgs() << "Stencil Pattern Access (Leaf) to array "; PtrOp->print(dbgs()); 
-      dbgs() << " | PHI Nodes: "; 
-      for (auto Idx: OuterMostLoadIdxs) {
-        Idx->print(dbgs()); 
-      }
-      dbgs() << " | "; v->print(dbgs()); 
+      dbgs() << "Constant (Leaf): ";
+      v->print(dbgs());
       dbgs() << "\n";
-      if(PtrOp!=StorePtrOp) {
-        lastPtrOp = PtrOp;
+
+    } else if (matchArrayLoad(v, LoadPtr, LoadPHIs)) {
+      if (InPtr == nullptr) {
+        InPtr = LoadPtr;
+      } else if (LoadPtr != InPtr && LoadPtr != OutPtr) {
+        dbgs() << "Only the input and output arrays may be referenced.";
+        return false;
       }
+
+      if (LoadPHIs.size() != PHIs.size()) {
+        dbgs() << "PHI mismatch between loads and the store.\n";
+        return false;
+      }
+
+      for (size_t i = 0; i < LoadPHIs.size(); ++i) {
+        if (LoadPHIs[i] != PHIs[i]) {
+          dbgs() << "PHI mismatch between loads and the store.\n";
+          return false;
+        }
+      }
+
+      LoadPHIs.clear();
+
+      dbgs() << "Stencil Pattern Access (Leaf) to array ";
+      LoadPtr->print(dbgs());
+      dbgs() << " | PHI Nodes: ";
+      for (auto phi : LoadPHIs) {
+        phi->print(dbgs());
+      }
+      dbgs() << " | ";
+      v->print(dbgs());
+      dbgs() << "\n";
 
     } else {
-      dbgs() << "Generic Leaf: "; v->print(dbgs()); dbgs() << "\n";
-
+      dbgs() << "Generic Leaf: ";
+      v->print(dbgs());
+      dbgs() << "\n";
     }
   }
-  dbgs() << "Done reading expr.\n";
-  auto it = std::find(LoadIdxs.begin(), LoadIdxs.end(), nullptr);
-  int firstNullIdx = -1;
-  // If equals 0 did not match stencil load since all initial values are null
-  if (it != LoadIdxs.end()) {
-    firstNullIdx = (it-LoadIdxs.begin());
-  }
-  if (PtrOp == nullptr || firstNullIdx==0) {
-    dbgs() << "It is NOT a stencil expr!\n";
-    return false;
-  }
-  dbgs() << "It is a stencil expr!\n";
+  dbgs() << "Found a stencil expr!\n";
   return true;
 }
 
-bool phiMatchesLoop(PHINode *phi, const Loop *L, ScalarEvolution &SE, LoopInfo &LI) {
-  if(phi==nullptr){
+inline bool isPHIAuxIndVarForLoop(PHINode *phi, const Loop *L, LoopInfo &LI,
+                                  ScalarEvolution &SE) {
+  if (phi == nullptr) {
     dbgs() << "phi is nullptr. This should not happen\n";
     return false;
   }
-  if(L->getLoopPreheader()==nullptr){
+  if (L->getLoopPreheader() == nullptr) {
     dbgs() << "Loop missing preheader. Trying to use loop info\n";
-    if(LI.getLoopFor(extractOutermostPHI(phi)->getParent())==L){
+    if (LI.getLoopFor(phi->getParent()) == L) {
       dbgs() << "Matched loop via loop info\n";
       return true;
     }
@@ -1067,87 +437,52 @@ bool phiMatchesLoop(PHINode *phi, const Loop *L, ScalarEvolution &SE, LoopInfo &
   return L->isAuxiliaryInductionVariable(*phi, SE);
 }
 
-static std::vector <const Loop *> getLoopVector(const Loop *L) {
-  std::vector <const Loop *> Loops = {};
-  while (L!=nullptr) {
-    Loops.push_back(L);
+inline SmallSet<const Loop *, 4> getLoopVector(const Loop *L, size_t MaxDepth) {
+  SmallSet<const Loop *, 4> Loops;
+  while (L != nullptr && L->getLoopDepth() <= MaxDepth) {
+    Loops.insert(L);
     L = L->getParentLoop();
   }
   return Loops;
 }
 
-static bool matchStencil(Instruction &SeedInst, std::vector<PHINode *> &OuterMostPHIs, 
-                      Value *&BasePtrToA, Value *&BasePtrToB, LoopInfo &LI,
-                      const Loop *L, ScalarEvolution &SE) {
-  // auto *SeedInstAsValue = static_cast<Value *>(&SeedInst); // B[] = some func of A[]
-  // Initilize for recurrsion
-  std::vector <const Loop *> Loops = getLoopVector(L);
-  std::vector<PHINode *> PHIs(Loops.size(),nullptr);
-
-  // Check for stencil store and extract induction variable
-  Value *StoreInstrAsValue = static_cast<Value *>(&SeedInst);
-  Value *StoreValue = nullptr; // TODO: I think we should check that this is in matchExpr
-  bool StoreMatched = match(StoreInstrAsValue,matchStencilStore(BasePtrToB, StoreValue, PHIs));
-  if (!StoreMatched) {
-    dbgs() << "! Failed to match stencil store\n";
+static bool matchStencil(Instruction &SeedInst, SmallVector<Value *, 3> &IVars,
+                         Value *&InPtr, Value *&OutPtr, const Loop *L,
+                         LoopInfo &LI, ScalarEvolution &SE) {
+  // Check for stencil store and extract induction variables
+  Value *StoreInstAsValue = static_cast<Value *>(&SeedInst);
+  SmallVector<PHINode *, 3> PHIs;
+  Value *StoreValue;
+  if (!matchArrayStore(StoreInstAsValue, OutPtr, PHIs, StoreValue))
     return false;
-  }
-  dbgs() << "Phis:" << "\n";
-  for(auto &phi: PHIs){
-    if(phi==nullptr){
-      dbgs() << "nullptr\n";
-    }
-    else{
-      dbgs() << "not nullptr\n";
-    }
-  }
-  auto it = std::find(PHIs.begin(), PHIs.end(), nullptr);
-  if (it != PHIs.end()) {
-    int NewSize = (it-PHIs.begin());
-    PHIs.resize(NewSize); // Remove nullptrs from end
-    Loops.resize(NewSize); // Remove outer loops that don't match induction vars
-  }
 
-  OuterMostPHIs = toOuterMostPHIs(PHIs);
-  std::vector<PHINode *> MatchedPHIs;
-
-  // Match induction vars to loops
-  for(auto loop: Loops){
+  // Match PHIs to loops by checking if they are auxiliary induction vars
+  SmallSet<const Loop *, 4> Loops = getLoopVector(L, PHIs.size());
+  for (size_t i = 0; i < PHIs.size(); ++i) {
     bool found = false;
-    for(auto &phi: OuterMostPHIs){
-      if(phiMatchesLoop(phi, loop, SE, LI)){
-        dbgs() << "Matched PHI: "; phi->print(dbgs()); dbgs() << "\n";
-        MatchedPHIs.push_back(phi);
-        found=true;
+    PHINode *outermostPHI = extractOutermostPHI(PHIs[i]);
+    for (auto Loop : Loops) {
+      if (isPHIAuxIndVarForLoop(outermostPHI, Loop, LI, SE)) {
+        IVars.push_back(outermostPHI);
+        Loops.erase(Loop);
+        found = true;
         break;
       }
     }
-    if(!found){
-      dbgs() << "! Failed to match induction variables to loops\n";
+    if (!found) {
       return false;
     }
   }
 
-  // Loops -> Loops that match induction vars (inner most first)
-  // MatchedPHIs -> (Outermost) Induction vars ordred by matching Loops
-  // OuterMostPHIs -> (Outermost) Induction vars ordred by usage
-  // PHIs -> Induction vars ordred by usage
- 
-
-  bool ExprMatched = matchExpr(SeedInst.getOperand(0), BasePtrToA, BasePtrToB, OuterMostPHIs);
-  if (!ExprMatched) {
-    dbgs() << "! Failed to match expr.\n";
-    return false;
-  }
-  return true;
+  return matchExpr(StoreValue, InPtr, OutPtr, PHIs);
 }
 
 namespace StencilFaRer {
 
-GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
-                                     DominatorTree &DT, ScalarEvolution &SE) {
-  auto ListOfKernels = 
-      std::make_unique<SmallVector<std::unique_ptr<Kernel>, 4>>();
+StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
+                                           DominatorTree &DT,
+                                           ScalarEvolution &SE) {
+  auto ListOfStencils = nullptr;
   SmallSetVector<const Loop *, 8> LoopsToProcess;
   collectLoopsWithDepthOneOrDeeper(LI, LoopsToProcess);
   for (const auto *L : LoopsToProcess) {
@@ -1156,35 +491,42 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
         if (!isa<StoreInst>(Inst))
           continue;
 
-        Value *BasePtrToA = nullptr;
-        Value *BasePtrToB = nullptr;
-        std::vector<PHINode *> OuterMostPHIs;
+        Value *InPtr = nullptr;        // Input array
+        Value *OutPtr = nullptr;       // Output array
+        SmallVector<Value *, 3> IVars; // Induction variables
         SmallSetVector<const llvm::Value *, 2> Stores;
+        // Extraneous stores to the output array
 
-        if (matchStencil(*Inst, OuterMostPHIs, BasePtrToA, BasePtrToB, LI, L, SE)){
-            bool matchBounds = true;
-            // TODO: Might want to order these by loops instead of access (or maybe it is ok)
-            for (auto *phi : OuterMostPHIs) {
-              Value *ILBound = nullptr; // Lower bound for induction variable I
-              Value *IUBound = nullptr; // Upper bound for induction variable I
-              if (
-                matchLoopLowerBound(LI, static_cast<PHINode *>(phi), ILBound) &&
-                matchLoopUpperBound(LI, static_cast<PHINode *>(phi), IUBound)
-              ){
-                dbgs() << "Loop lower bound: "; ILBound->print(dbgs()); dbgs() << "\n";
-                dbgs() << "Loop upper bound: "; IUBound->print(dbgs()); dbgs() << "\n";
-              } else{
-                matchBounds = false;
-              }
+        if (matchStencil(*Inst, IVars, InPtr, OutPtr, L, LI, SE)) {
+          bool matchBounds = true;
+          for (auto *IVar : IVars) {
+            Value *ILBound = nullptr; // Lower bound for induction variable I
+            Value *IUBound = nullptr; // Upper bound for induction variable I
+            if (matchLoopLowerBound(LI, static_cast<PHINode *>(IVar),
+                                    ILBound) &&
+                matchLoopUpperBound(LI, static_cast<PHINode *>(IVar),
+                                    IUBound)) {
+              dbgs() << "Induction Variable ";
+              IVar->print(dbgs());
+              dbgs() << "\n";
+              dbgs() << "Loop lower bound: ";
+              ILBound->print(dbgs());
+              dbgs() << "\n";
+              dbgs() << "Loop upper bound: ";
+              IUBound->print(dbgs());
+              dbgs() << "\n";
+            } else {
+              matchBounds = false;
             }
-            if (matchBounds) {
-              dbgs() << "Found a stencil!\n";
-            }
+          }
+          if (matchBounds) {
+            dbgs() << "Found a stencil!\n";
+          }
         } else {
           continue;
         }
 
-        const Loop *OuterLoop = getOuterLoop(LI, OuterMostPHIs);
+        const Loop *OuterLoop = getOuterLoop(LI, IVars);
         // Verify that we only have one block we're exiting from.
         if (OuterLoop->getExitingBlock() == nullptr) {
           LLVM_DEBUG(dbgs() << "Loop had multiple exiting blocks.\n");
@@ -1197,11 +539,10 @@ GEMMMatcher::Result GEMMMatcher::run(Function &F, LoopInfo &LI,
           LLVM_DEBUG(dbgs() << "Loop had multiple exit blocks.\n");
           continue;
         }
-
       }
     }
   }
-  return ListOfKernels;
+  return ListOfStencils;
 }
 
 } // namespace StencilFaRer

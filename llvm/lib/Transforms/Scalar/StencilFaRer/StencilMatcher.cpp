@@ -159,7 +159,7 @@ PHINode *extractOutermostPHI(PHINode *const &V) {
 // A helper function that the inserts in Loops list the innermost loop nested
 // in L, or L itself if L does not have sub-loops.
 static void collectInnermostLoops(const Loop *L,
-                                 SmallSetVector<const Loop *, 8> &Loops) {
+                                  SmallSetVector<const Loop *, 8> &Loops) {
   SmallSetVector<const Loop *, 8> WorkQueue;
 
   if (L->getSubLoops().size() == 0) {
@@ -324,7 +324,7 @@ inline bool matchArrayLoad(const Value *Inst, Value *&BasePtrOp,
   return true;
 }
 
-static bool matchArrayStore(const Value *Inst, Value *&BasePtrOp, 
+static bool matchArrayStore(const Value *Inst, Value *&BasePtrOp,
                             SmallVector<PHINode *, 3> &PHIs, Value *&ValueOp) {
   GetElementPtrInst *PtrOp;
   if (!match(Inst, m_Store(m_Value(ValueOp), m_GEP(PtrOp))))
@@ -344,8 +344,10 @@ static bool matchArrayStore(const Value *Inst, Value *&BasePtrOp,
   return true;
 }
 
-inline bool matchExpr(const Value *seed, Value *&InPtr, const Value *OutPtr,
-                      const SmallVector<PHINode *, 3> &PHIs) {
+inline bool matchExpr(const Value *seed, const Value *OutPtr,
+                      const SmallVector<PHINode *, 3> &PHIs, 
+                      SmallVector<Value *, 3> &InPtrs, 
+                      bool &SelfReferencing) {
   dbgs() << "[expr]\n";
   SmallSetVector<const Value *, 8> WorkQueue;
   WorkQueue.insert(seed);
@@ -353,8 +355,10 @@ inline bool matchExpr(const Value *seed, Value *&InPtr, const Value *OutPtr,
   Value *BinLHS;
   Value *BinRHS;
   Value *UnArg;
+
   Value *LoadPtr;
   SmallVector<PHINode *, 3> LoadPHIs;
+  SmallSet<Value *, 3> LoadPtrs;
 
   while (!WorkQueue.empty()) {
     const auto *v = WorkQueue.front();
@@ -379,24 +383,25 @@ inline bool matchExpr(const Value *seed, Value *&InPtr, const Value *OutPtr,
       dbgs() << "\n";
 
     } else if (matchArrayLoad(v, LoadPtr, LoadPHIs)) {
-      if (InPtr == nullptr) {
-        InPtr = LoadPtr;
-      } else if (LoadPtr != InPtr && LoadPtr != OutPtr) {
-        dbgs() << "Only the input and output arrays may be referenced.";
-        return false;
-      }
-
       if (LoadPHIs.size() != PHIs.size()) {
         dbgs() << "PHI mismatch between loads and the store.\n";
         return false;
       }
 
-      for (size_t i = 0; i < LoadPHIs.size(); ++i) {
+      for (size_t i = 0; i < LoadPHIs.size(); ++i)
         if (LoadPHIs[i] != PHIs[i]) {
           dbgs() << "PHI mismatch between loads and the store.\n";
           return false;
         }
-      }
+
+      // Record that the LoadPtr is an input for the stencil computation
+      auto res = LoadPtrs.insert(LoadPtr);
+      if (res.second)
+        InPtrs.push_back(LoadPtr);
+
+      // Set SelfReferencing flag if stencil references itself
+      if (LoadPtr == OutPtr)
+        SelfReferencing = true;
 
       LoadPHIs.clear();
 
@@ -446,8 +451,10 @@ inline SmallSet<const Loop *, 4> getLoopVector(const Loop *L, size_t MaxDepth) {
   return Loops;
 }
 
-static bool matchStencil(Instruction &SeedInst, SmallVector<Value *, 3> &IVars,
-                         Value *&InPtr, Value *&OutPtr, const Loop *L,
+static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
+                         SmallVector<Value *, 3> &IVars,
+                         SmallVector<Value *, 3> &InPtrs, 
+                         bool &SelfReferencing, const Loop *L,
                          LoopInfo &LI, ScalarEvolution &SE) {
   // Check for stencil store and extract induction variables
   Value *StoreInstAsValue = static_cast<Value *>(&SeedInst);
@@ -474,7 +481,7 @@ static bool matchStencil(Instruction &SeedInst, SmallVector<Value *, 3> &IVars,
     }
   }
 
-  return matchExpr(StoreValue, InPtr, OutPtr, PHIs);
+  return matchExpr(StoreValue, OutPtr, PHIs, InPtrs, SelfReferencing);
 }
 
 namespace StencilFaRer {
@@ -491,17 +498,17 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
         if (!isa<StoreInst>(Inst))
           continue;
 
-        Value *InPtr = nullptr;        // Input array
-        Value *OutPtr = nullptr;       // Output array
-        SmallVector<Value *, 3> IVars; // Induction variables
-        SmallSetVector<const llvm::Value *, 2> Stores;
-        // Extraneous stores to the output array
+        Value *OutPtr;                  // Output array
+        SmallVector<Value *, 3> IVars;  // Induction variables
+        SmallVector<Value *, 3> InPtrs; // Input arrays
+        bool SelfReferencing = false;
 
-        if (matchStencil(*Inst, IVars, InPtr, OutPtr, L, LI, SE)) {
+        if (matchStencil(*Inst, OutPtr, IVars, InPtrs, SelfReferencing, L, LI,
+                         SE)) {
           bool matchBounds = true;
           for (auto *IVar : IVars) {
-            Value *ILBound = nullptr; // Lower bound for induction variable I
-            Value *IUBound = nullptr; // Upper bound for induction variable I
+            Value *ILBound; // Induction variable lower bound
+            Value *IUBound; // Induction variable upper bound
             if (matchLoopLowerBound(LI, static_cast<PHINode *>(IVar),
                                     ILBound) &&
                 matchLoopUpperBound(LI, static_cast<PHINode *>(IVar),
@@ -521,6 +528,9 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
           }
           if (matchBounds) {
             dbgs() << "Found a stencil!\n";
+            if (SelfReferencing)
+              dbgs() << "The stencil is self-referential.\n";
+            dbgs() << "The stencil has " << InPtrs.size() << " input arrays.\n";
           }
         } else {
           continue;

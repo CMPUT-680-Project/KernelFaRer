@@ -292,23 +292,26 @@ static Loop *getOuterLoop(LoopInfo &LI, const SmallVector<Value *, 3> &IVars) {
   return outer;
 }
 
-inline auto offsetPHIOrPHI(PHINode *&PHI) {
-  return m_OneOf(m_PHI(PHI),
-                 m_c_Add(m_PHI(PHI), m_ConstantInt()),
-                 m_c_Or(m_PHI(PHI), m_SpecificInt(1)));
+inline auto offsetPHIOrPHI(PHINode *&PHI, uint64_t &offset) {
+  return m_OneOf(m_PHI(PHI), m_c_Add(m_PHI(PHI), m_ConstantInt(offset)));
 }
 
 inline bool matchStencilLoad(const Value *Inst, Value *&BasePtrOp,
-                           SmallVector<PHINode *, 3> &PHIs) {
+                           SmallVector<PHINode *, 3> &PHIs,
+                           SmallVector<uint64_t, 3> &offsets) {
   GetElementPtrInst *PtrOp;
+  uint64_t offset;
   if (!match(Inst, m_Load(m_GEP(PtrOp))))
     return false;
   do {
     auto N = PtrOp->getNumOperands();
     for (size_t i = 1; i < N; ++i) {
       PHINode *phi;
-      if (match(PtrOp->getOperand(N - i), offsetPHIOrPHI(phi)))
+      offset = 0;
+      if (match(PtrOp->getOperand(N - i), offsetPHIOrPHI(phi, offset))) {
         PHIs.push_back(phi);
+        offsets.push_back(offset);
+      }
       else
         return false;
     }
@@ -352,6 +355,7 @@ inline bool matchExpr(const Value *seed, const Value *OutPtr,
 
   Value *LoadPtr;
   SmallVector<PHINode *, 3> LoadPHIs;
+  SmallVector<uint64_t, 3> LoadOffsets;
   SmallSet<Value *, 3> LoadPtrs;
 
   while (!WorkQueue.empty()) {
@@ -376,7 +380,7 @@ inline bool matchExpr(const Value *seed, const Value *OutPtr,
       v->print(dbgs());
       dbgs() << "\n";
 
-    } else if (matchStencilLoad(v, LoadPtr, LoadPHIs)) {
+    } else if (matchStencilLoad(v, LoadPtr, LoadPHIs, LoadOffsets)) {
       if (LoadPHIs.size() != PHIs.size()) {
         dbgs() << "PHI mismatch between loads and the store.\n";
         return false;
@@ -397,17 +401,14 @@ inline bool matchExpr(const Value *seed, const Value *OutPtr,
       if (LoadPtr == OutPtr)
         SelfReferencing = true;
 
-      LoadPHIs.clear();
-
-      dbgs() << "Stencil Pattern Access (Leaf) to array ";
-      LoadPtr->print(dbgs());
-      dbgs() << " | PHI Nodes: ";
-      for (auto phi : LoadPHIs) {
-        phi->print(dbgs());
+      dbgs() << "Stencil Pattern Access (Leaf) to array `" << LoadPtr->getName() << "` | Offsets: ";
+      for (uint64_t offset : LoadOffsets) {
+        dbgs() << int64_t(offset) << " ";
       }
-      dbgs() << " | ";
-      v->print(dbgs());
       dbgs() << "\n";
+
+      LoadPHIs.clear();
+      LoadOffsets.clear();
 
     } else if (isa<LoadInst>(v)) {
       dbgs() << "Unrecognized load: ";

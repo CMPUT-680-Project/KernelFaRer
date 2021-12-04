@@ -304,7 +304,7 @@ inline auto linearFunctionOfPHI(PHINode *&PHI) {
                  m_c_Or(scaledPHIOrPHI(PHI), m_SpecificInt(1)));
 }
 
-inline bool matchArrayLoad(const Value *Inst, Value *&BasePtrOp,
+inline bool matchStencilLoad(const Value *Inst, Value *&BasePtrOp,
                            SmallVector<PHINode *, 3> &PHIs) {
   GetElementPtrInst *PtrOp;
   if (!match(Inst, m_Load(m_GEP(PtrOp))))
@@ -324,7 +324,7 @@ inline bool matchArrayLoad(const Value *Inst, Value *&BasePtrOp,
   return true;
 }
 
-static bool matchArrayStore(const Value *Inst, Value *&BasePtrOp,
+static bool matchStencilStore(const Value *Inst, Value *&BasePtrOp,
                             SmallVector<PHINode *, 3> &PHIs, Value *&ValueOp) {
   GetElementPtrInst *PtrOp;
   if (!match(Inst, m_Store(m_Value(ValueOp), m_GEP(PtrOp))))
@@ -382,7 +382,7 @@ inline bool matchExpr(const Value *seed, const Value *OutPtr,
       v->print(dbgs());
       dbgs() << "\n";
 
-    } else if (matchArrayLoad(v, LoadPtr, LoadPHIs)) {
+    } else if (matchStencilLoad(v, LoadPtr, LoadPHIs)) {
       if (LoadPHIs.size() != PHIs.size()) {
         dbgs() << "PHI mismatch between loads and the store.\n";
         return false;
@@ -415,12 +415,24 @@ inline bool matchExpr(const Value *seed, const Value *OutPtr,
       v->print(dbgs());
       dbgs() << "\n";
 
+    } else if (isa<LoadInst>(v)) {
+      dbgs() << "Unrecognized load: ";
+      v->print(dbgs());
+      dbgs() << "\n";
+      return false;
+
     } else {
-      dbgs() << "Generic Leaf: ";
+      dbgs() << "Leaf: ";
       v->print(dbgs());
       dbgs() << "\n";
     }
   }
+
+  if (InPtrs.empty()) {
+    dbgs() << "Not a stencil expression; there are no input arrays.\n";
+    return false;
+  }
+
   dbgs() << "Found a stencil expr!\n";
   return true;
 }
@@ -460,7 +472,7 @@ static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
   Value *StoreInstAsValue = static_cast<Value *>(&SeedInst);
   SmallVector<PHINode *, 3> PHIs;
   Value *StoreValue;
-  if (!matchArrayStore(StoreInstAsValue, OutPtr, PHIs, StoreValue))
+  if (!matchStencilStore(StoreInstAsValue, OutPtr, PHIs, StoreValue))
     return false;
 
   // Match PHIs to loops by checking if they are auxiliary induction vars

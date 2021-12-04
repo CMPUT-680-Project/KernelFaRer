@@ -292,16 +292,10 @@ static Loop *getOuterLoop(LoopInfo &LI, const SmallVector<Value *, 3> &IVars) {
   return outer;
 }
 
-inline auto scaledPHIOrPHI(PHINode *&PHI) {
-  return m_CombineOr(m_PHI(PHI), m_OneOf(m_c_Mul(m_PHI(PHI), m_ConstantInt()),
-                                         m_Shl(m_PHI(PHI), m_ConstantInt()),
-                                         m_Shr(m_PHI(PHI), m_ConstantInt())));
-}
-
-inline auto linearFunctionOfPHI(PHINode *&PHI) {
-  return m_OneOf(scaledPHIOrPHI(PHI),
-                 m_c_Add(scaledPHIOrPHI(PHI), m_ConstantInt()),
-                 m_c_Or(scaledPHIOrPHI(PHI), m_SpecificInt(1)));
+inline auto offsetPHIOrPHI(PHINode *&PHI) {
+  return m_OneOf(m_PHI(PHI),
+                 m_c_Add(m_PHI(PHI), m_ConstantInt()),
+                 m_c_Or(m_PHI(PHI), m_SpecificInt(1)));
 }
 
 inline bool matchStencilLoad(const Value *Inst, Value *&BasePtrOp,
@@ -313,7 +307,7 @@ inline bool matchStencilLoad(const Value *Inst, Value *&BasePtrOp,
     auto N = PtrOp->getNumOperands();
     for (size_t i = 1; i < N; ++i) {
       PHINode *phi;
-      if (match(PtrOp->getOperand(N - i), linearFunctionOfPHI(phi)))
+      if (match(PtrOp->getOperand(N - i), offsetPHIOrPHI(phi)))
         PHIs.push_back(phi);
       else
         return false;

@@ -449,9 +449,9 @@ inline bool isPHIAuxIndVarForLoop(PHINode *phi, const Loop *L, LoopInfo &LI,
   return L->isAuxiliaryInductionVariable(*phi, SE);
 }
 
-inline SmallSet<const Loop *, 4> getLoopVector(const Loop *L, size_t MaxDepth) {
+inline SmallSet<const Loop *, 4> getLoopVector(const Loop *L, size_t MinDepth) {
   SmallSet<const Loop *, 4> Loops;
-  while (L != nullptr && L->getLoopDepth() <= MaxDepth) {
+  while (L != nullptr && L->getLoopDepth() > MinDepth) {
     Loops.insert(L);
     L = L->getParentLoop();
   }
@@ -471,7 +471,7 @@ static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
     return false;
 
   // Match PHIs to loops by checking if they are auxiliary induction vars
-  SmallSet<const Loop *, 4> Loops = getLoopVector(L, PHIs.size());
+  SmallSet<const Loop *, 4> Loops = getLoopVector(L, L->getLoopDepth() - PHIs.size());
   for (size_t i = 0; i < PHIs.size(); ++i) {
     bool found = false;
     PHINode *outermostPHI = extractOutermostPHI(PHIs[i]);
@@ -484,6 +484,7 @@ static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
       }
     }
     if (!found) {
+      PHIs[i]->print(dbgs());
       return false;
     }
   }

@@ -307,11 +307,15 @@ inline bool matchStencilLoad(const Value *Inst, Value *&BasePtrOp,
   do {
     auto N = PtrOp->getNumOperands();
     for (size_t i = 1; i < N; ++i) {
-      PHINode *phi;
+      PHINode *phi = nullptr;
       offset = 0;
-      if (match(PtrOp->getOperand(N - i), offsetPHIOrPHI(phi, offset))) {
-        PHIs.push_back(phi);
-        offsets.push_back(offset);
+      if (match(PtrOp->getOperand(N - i),
+                m_CombineOr(offsetPHIOrPHI(phi, offset), m_ConstantInt()))) {
+        if (phi) {
+          PHIs.push_back(phi);
+          offsets.push_back(offset);
+        } else
+          break;
       } else
         return false;
     }
@@ -330,15 +334,15 @@ static bool matchStencilStore(const Value *Inst, Value *&BasePtrOp,
   do {
     auto N = PtrOp->getNumOperands();
     for (size_t i = 1; i < N; ++i) {
-      PHINode *phi;
-      if (match(PtrOp->getOperand(N - i), m_PHI(phi))){
-        PHIs.push_back(phi);
-      }
-      else{
-        dbgs() << "matchStencilStore: failed to match PHI:\n";
-        PtrOp->getOperand(N - i)->print(dbgs());
+      PHINode *phi = nullptr;
+      if (match(PtrOp->getOperand(N - i),
+                m_CombineOr(m_PHI(phi), m_ConstantInt()))) {
+        if (phi)
+          PHIs.push_back(phi);
+        else
+          break;
+      } else
         return false;
-      }
     }
   } while (match(PtrOp->getPointerOperand(),
                  m_CombineOr(m_Load(m_GEP(PtrOp)), m_GEP(PtrOp))));

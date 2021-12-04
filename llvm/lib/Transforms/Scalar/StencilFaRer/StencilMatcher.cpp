@@ -658,17 +658,17 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
               const SCEVAddRecExpr *AR = dyn_cast<SCEVAddRecExpr>(PhiScev);
               const SCEV *Step = AR->getStepRecurrence(SE);
               const SCEVConstant *ConstStep = dyn_cast<SCEVConstant>(Step);
+              const PHINode* IVarAsPHI =static_cast<PHINode *>(IVar);
               if (!ConstStep) {
                 // TODO: Check for loop invariant step
-                // if(SE.isLoopInvariant(Step, LI.getLoopFor(IVar->getParent()))){
-                //   dbgs() << "Loop step: ";
-                //   Step->print(dbgs());
-                //   dbgs() << "\n";
-                // } else{
-                //   matchBounds = false;
-                //   dbgs() << "Loop is not loop invariant, so cannot be a stencil\n";
-                // }
-                // 
+                if(IVarAsPHI && SE.isLoopInvariant(Step, LI.getLoopFor(IVarAsPHI->getParent()))){
+                  dbgs() << "Loop step: ";
+                  Step->print(dbgs());
+                  dbgs() << "\n";
+                } else{
+                  matchBounds = false;
+                  dbgs() << "Loop is not loop invariant, so cannot be a stencil\n";
+                }
                 dbgs() << "Loop step is not constant!\n";
               } else {
                 dbgs() << "Loop step: ";

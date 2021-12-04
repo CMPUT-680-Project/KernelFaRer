@@ -95,11 +95,55 @@ template <typename Head, typename... List> struct match_one_of<Head, List...> {
   }
 };
 
+// Base classs for m_OneOf matcher.
+template <typename... List> struct match_one_of_trackable {
+  // Empty instance should never be used.
+  match_one_of_trackable(int &Index) = delete;
+};
+
+// Empty list is never a match.
+template <> struct match_one_of_trackable<> {
+  int Index;
+  match_one_of_trackable(int &Index) : Index(Index) {}
+  template <typename ITy> bool match(ITy *V) { return false; }
+};
+
+// Matches either the head or tail of variadic OneOf argument list.
+template <typename Head, typename... List> struct match_one_of_trackable<Head, List...> {
+  int &Index;
+  Head Op;
+  match_one_of_trackable<List...> Next;
+
+  match_one_of_trackable(int &Index, Head Op, List... Next) : Index(Index), Op(Op), Next(Index, Next...) {}
+
+  template <typename ITy> bool match(ITy *V) {
+    if(Op.match(V)) {
+      return true;
+    } else{
+      Index++;
+      if(Next.match(V)){
+        return true;
+      } else{
+        Index = -1;
+        return false;
+      }
+    }
+  }
+};
+
 /// This helper class is used to or-combine a list of matchers.
 /// Matches one of the patterns in a list.
 template <typename... PatternList>
 inline match_one_of<PatternList...> m_OneOf(PatternList... Patterns) {
   return match_one_of<PatternList...>(Patterns...);
+}
+
+/// This helper class is used to or-combine a list of matchers.
+/// Matches one of the patterns in a list.
+template <typename... PatternList>
+inline match_one_of_trackable<PatternList...> m_OneOfTrackable(int &Index, PatternList... Patterns) {
+  Index=0;
+  return match_one_of_trackable<PatternList...>(Index,Patterns...);
 }
 
 /// This helper class implements the same behavior as m_CombineOr but also
@@ -145,10 +189,13 @@ PHINode *extractOutermostPHI(PHINode *const &V) {
     WorkQueue.remove(PHI);
 
     if (match(PHI,
-              m_OneOf(m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_Value()),
-                      m_PHI(m_Value(), m_c_Add(m_Specific(PHI), m_Value())),
-                      m_PHI(m_ConstantInt(), m_ConstantInt()))))
+              m_OneOf(
+                m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_Value()),
+                m_PHI(m_Value(), m_c_Add(m_Specific(PHI), m_Value())),
+                m_PHI(m_ConstantInt(), m_ConstantInt())
+              ))){
       return const_cast<PHINode *>(PHI);
+    }
 
     for (const Use &Op : PHI->incoming_values())
       if (auto *InPHI = dyn_cast_or_null<PHINode>(&Op))

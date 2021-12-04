@@ -7,7 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Analysis/IVDescriptors.h"
 #include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Analysis/ScalarEvolutionExpressions.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstrTypes.h"
@@ -329,10 +331,14 @@ static bool matchStencilStore(const Value *Inst, Value *&BasePtrOp,
     auto N = PtrOp->getNumOperands();
     for (size_t i = 1; i < N; ++i) {
       PHINode *phi;
-      if (match(PtrOp->getOperand(N - i), m_PHI(phi)))
+      if (match(PtrOp->getOperand(N - i), m_PHI(phi))){
         PHIs.push_back(phi);
-      else
+      }
+      else{
+        dbgs() << "matchStencilStore: failed to match PHI:\n";
+        PtrOp->getOperand(N - i)->print(dbgs());
         return false;
+      }
     }
   } while (match(PtrOp->getPointerOperand(),
                  m_CombineOr(m_Load(m_GEP(PtrOp)), m_GEP(PtrOp))));
@@ -465,8 +471,10 @@ static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
   Value *StoreInstAsValue = static_cast<Value *>(&SeedInst);
   SmallVector<PHINode *, 3> PHIs;
   Value *StoreValue;
-  if (!matchStencilStore(StoreInstAsValue, OutPtr, PHIs, StoreValue))
+  if (!matchStencilStore(StoreInstAsValue, OutPtr, PHIs, StoreValue)){
+    dbgs() << "Not a stencil store.\n";
     return false;
+  }
 
   // Match PHIs to loops by checking if they are auxiliary induction vars
   SmallSet<const Loop *, 4> Loops =
@@ -483,6 +491,7 @@ static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
       }
     }
     if (!found) {
+      dbgs() << "Could not find a loop for PHI: ";
       PHIs[i]->print(dbgs());
       return false;
     }
@@ -521,6 +530,20 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
                                     ILBound) &&
                 matchLoopUpperBound(LI, static_cast<PHINode *>(IVar),
                                     IUBound)) {
+              InductionDescriptor IndDesc;
+              const SCEV *PhiScev = SE.getSCEV(IVar);
+              const SCEVAddRecExpr *AR = dyn_cast<SCEVAddRecExpr>(PhiScev);
+              const SCEV *Step = AR->getStepRecurrence(SE);
+              const SCEVConstant *ConstStep = dyn_cast<SCEVConstant>(Step);
+              if (!ConstStep){
+                // TODO: Check for loop invariant step
+                // !SE.isLoopInvariant(Step, LI.getLoopFor(phi->getParent()))
+                dbgs() << "Loop step is not constant!\n";
+              } else{
+                dbgs() << "Loop step: ";
+                ConstStep->getValue()->print(dbgs());
+                dbgs() << "\n";
+              }
               dbgs() << "Induction Variable ";
               IVar->print(dbgs());
               dbgs() << "\n";

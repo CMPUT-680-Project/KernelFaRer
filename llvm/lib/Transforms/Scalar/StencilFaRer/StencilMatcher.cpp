@@ -142,11 +142,10 @@ PHINode *extractOutermostPHI(PHINode *const &V) {
     const auto *PHI = WorkQueue.front();
     WorkQueue.remove(PHI);
 
-    if (match(
-            PHI,
-            m_OneOf(m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_Value()),
-                    m_PHI(m_Value(), m_c_Add(m_Specific(PHI), m_Value())),
-                    m_PHI(m_ConstantInt(), m_ConstantInt()))))
+    if (match(PHI,
+              m_OneOf(m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_Value()),
+                      m_PHI(m_Value(), m_c_Add(m_Specific(PHI), m_Value())),
+                      m_PHI(m_ConstantInt(), m_ConstantInt()))))
       return const_cast<PHINode *>(PHI);
 
     for (const Use &Op : PHI->incoming_values())
@@ -297,8 +296,8 @@ inline auto offsetPHIOrPHI(PHINode *&PHI, uint64_t &offset) {
 }
 
 inline bool matchStencilLoad(const Value *Inst, Value *&BasePtrOp,
-                           SmallVector<PHINode *, 3> &PHIs,
-                           SmallVector<uint64_t, 3> &offsets) {
+                             SmallVector<PHINode *, 3> &PHIs,
+                             SmallVector<uint64_t, 3> &offsets) {
   GetElementPtrInst *PtrOp;
   uint64_t offset;
   if (!match(Inst, m_Load(m_GEP(PtrOp))))
@@ -311,8 +310,7 @@ inline bool matchStencilLoad(const Value *Inst, Value *&BasePtrOp,
       if (match(PtrOp->getOperand(N - i), offsetPHIOrPHI(phi, offset))) {
         PHIs.push_back(phi);
         offsets.push_back(offset);
-      }
-      else
+      } else
         return false;
     }
   } while (match(PtrOp->getPointerOperand(),
@@ -322,7 +320,8 @@ inline bool matchStencilLoad(const Value *Inst, Value *&BasePtrOp,
 }
 
 static bool matchStencilStore(const Value *Inst, Value *&BasePtrOp,
-                            SmallVector<PHINode *, 3> &PHIs, Value *&ValueOp) {
+                              SmallVector<PHINode *, 3> &PHIs,
+                              Value *&ValueOp) {
   GetElementPtrInst *PtrOp;
   if (!match(Inst, m_Store(m_Value(ValueOp), m_GEP(PtrOp))))
     return false;
@@ -342,9 +341,8 @@ static bool matchStencilStore(const Value *Inst, Value *&BasePtrOp,
 }
 
 inline bool matchExpr(const Value *seed, const Value *OutPtr,
-                      const SmallVector<PHINode *, 3> &PHIs, 
-                      SmallVector<Value *, 3> &InPtrs, 
-                      bool &SelfReferencing) {
+                      const SmallVector<PHINode *, 3> &PHIs,
+                      SmallVector<Value *, 3> &InPtrs, bool &SelfReferencing) {
   dbgs() << "[expr]\n";
   SmallSetVector<const Value *, 8> WorkQueue;
   WorkQueue.insert(seed);
@@ -401,7 +399,8 @@ inline bool matchExpr(const Value *seed, const Value *OutPtr,
       if (LoadPtr == OutPtr)
         SelfReferencing = true;
 
-      dbgs() << "Stencil Pattern Access (Leaf) to array `" << LoadPtr->getName() << "` | Offsets: ";
+      dbgs() << "Stencil Pattern Access (Leaf) to array `" << LoadPtr->getName()
+             << "` | Offsets: ";
       for (uint64_t offset : LoadOffsets) {
         dbgs() << int64_t(offset) << " ";
       }
@@ -460,9 +459,8 @@ inline SmallSet<const Loop *, 4> getLoopVector(const Loop *L, size_t MinDepth) {
 
 static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
                          SmallVector<Value *, 3> &IVars,
-                         SmallVector<Value *, 3> &InPtrs, 
-                         bool &SelfReferencing, const Loop *L,
-                         LoopInfo &LI, ScalarEvolution &SE) {
+                         SmallVector<Value *, 3> &InPtrs, bool &SelfReferencing,
+                         const Loop *L, LoopInfo &LI, ScalarEvolution &SE) {
   // Check for stencil store and extract induction variables
   Value *StoreInstAsValue = static_cast<Value *>(&SeedInst);
   SmallVector<PHINode *, 3> PHIs;
@@ -471,7 +469,8 @@ static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
     return false;
 
   // Match PHIs to loops by checking if they are auxiliary induction vars
-  SmallSet<const Loop *, 4> Loops = getLoopVector(L, L->getLoopDepth() - PHIs.size());
+  SmallSet<const Loop *, 4> Loops =
+      getLoopVector(L, L->getLoopDepth() - PHIs.size());
   for (size_t i = 0; i < PHIs.size(); ++i) {
     bool found = false;
     PHINode *outermostPHI = extractOutermostPHI(PHIs[i]);
@@ -497,7 +496,8 @@ namespace StencilFaRer {
 StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
                                            DominatorTree &DT,
                                            ScalarEvolution &SE) {
-  auto ListOfStencils = nullptr;
+  auto ListOfStencils =
+      std::make_unique<SmallVector<std::unique_ptr<StencilComputation>, 4>>();
   SmallSetVector<const Loop *, 8> LoopsToProcess;
   collectLoopsWithDepthOneOrDeeper(LI, LoopsToProcess);
   for (const auto *L : LoopsToProcess) {
@@ -544,7 +544,7 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
           continue;
         }
 
-        const Loop *OuterLoop = getOuterLoop(LI, IVars);
+        Loop *OuterLoop = getOuterLoop(LI, IVars);
         // Verify that we only have one block we're exiting from.
         if (OuterLoop->getExitingBlock() == nullptr) {
           LLVM_DEBUG(dbgs() << "Loop had multiple exiting blocks.\n");
@@ -557,8 +557,21 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
           LLVM_DEBUG(dbgs() << "Loop had multiple exit blocks.\n");
           continue;
         }
+
+        ListOfStencils->push_back(
+            std::make_unique<StencilComputation>(*OuterLoop, *Inst));
       }
     }
+  }
+
+  dbgs() << "[Summary]\n";
+  dbgs() << "Found " << ListOfStencils->size() << " stencil(s):\n";
+  for (auto &SC : *ListOfStencils) {
+    dbgs() << "Stencil loop starting at ";
+    SC->getAssociatedLoop().getStartLoc().print(dbgs());
+    dbgs() << " with reduction store at ";
+    SC->getReductionStore().getDebugLoc().print(dbgs());
+    dbgs() << "\n";
   }
   return ListOfStencils;
 }

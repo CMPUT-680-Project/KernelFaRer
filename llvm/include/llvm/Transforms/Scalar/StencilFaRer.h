@@ -28,10 +28,21 @@ using namespace llvm;
 
 namespace StencilFaRer {
 
+class StencilComputation {
+  Loop &L;
+  Instruction &ReductionStore;
+
+public:
+  StencilComputation(Loop &L, Instruction &RS) : L(L), ReductionStore(RS) {}
+  Loop &getAssociatedLoop() const { return L; }
+  Instruction &getReductionStore() const { return ReductionStore; }
+};
+
 /// Performs Matrix-Multiply Recognition Pass.
 struct StencilMatcher {
 public:
-  using Result = void *;
+  using Result =
+      std::unique_ptr<SmallVector<std::unique_ptr<StencilComputation>, 4>>;
   static Result run(Function &F, LoopInfo &LI, DominatorTree &DT,
                     ScalarEvolution &SE);
 };

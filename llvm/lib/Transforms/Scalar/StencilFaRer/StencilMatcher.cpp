@@ -133,6 +133,21 @@ struct match_one_of_trackable<Head, List...> {
   }
 };
 
+// Matches either the head or tail of variadic OneOf argument list.
+template <typename... List>
+struct match_one_of_trackable_wrapper {
+  int &Index;
+  match_one_of_trackable<List...> Next;
+
+  match_one_of_trackable_wrapper(int &Index, List... Next)
+      : Index(Index), Next(Index, Next...) {}
+
+  template <typename ITy> bool match(ITy *V) {
+    Index=0;
+    return Next.match(V);
+  }
+};
+
 /// This helper class is used to or-combine a list of matchers.
 /// Matches one of the patterns in a list.
 template <typename... PatternList>
@@ -143,10 +158,9 @@ inline match_one_of<PatternList...> m_OneOf(PatternList... Patterns) {
 /// This helper class is used to or-combine a list of matchers.
 /// Matches one of the patterns in a list.
 template <typename... PatternList>
-inline match_one_of_trackable<PatternList...>
+inline match_one_of_trackable_wrapper<PatternList...>
 m_OneOfTrackable(int &Index, PatternList... Patterns) {
-  Index = 0;
-  return match_one_of_trackable<PatternList...>(Index, Patterns...);
+  return match_one_of_trackable_wrapper<PatternList...>(Index, Patterns...);
 }
 
 /// This helper class implements the same behavior as m_CombineOr but also
@@ -348,9 +362,12 @@ const int SCALEOP_NONE = 0;
 // const int SCALEOP_MUL = 1;
 // const int SCALEOP_SHL = 2;
 inline auto scaledPHIOrPHI(int &ScaleOp, PHINode *&PHI, uint64_t &scale) {
-  return m_OneOfTrackable(ScaleOp, m_PHI(PHI),
-                          m_c_Mul(m_PHI(PHI), m_ConstantInt(scale)),
-                          m_Shl(m_PHI(PHI), m_ConstantInt(scale)));
+  return m_OneOfTrackable(
+    ScaleOp, 
+    m_PHI(PHI),
+    m_c_Mul(m_PHI(PHI), m_ConstantInt(scale)),
+    m_Shl(m_PHI(PHI), m_ConstantInt(scale))
+  );
 }
 
 const int OFFSETOP_NONE = 0;
@@ -359,9 +376,11 @@ const int OFFSETOP_OR1 = 2;
 inline auto linearFuncOfPHI(int &ScaleOp, int &OffsetOp, PHINode *&PHI,
                             uint64_t &scale, uint64_t &offset) {
   return m_OneOfTrackable(
-      OffsetOp, scaledPHIOrPHI(ScaleOp, PHI, scale),
+      OffsetOp, 
+      scaledPHIOrPHI(ScaleOp, PHI, scale),
       m_c_Add(scaledPHIOrPHI(ScaleOp, PHI, scale), m_ConstantInt(offset)),
-      m_c_Or(scaledPHIOrPHI(ScaleOp, PHI, scale), m_SpecificInt(1)));
+      m_c_Or(scaledPHIOrPHI(ScaleOp, PHI, scale), m_SpecificInt(1))
+  );
 }
 
 inline bool extractBasePtrOpAndPHIs(GetElementPtrInst *PtrOp, Value *&BasePtrOp,
@@ -380,7 +399,8 @@ inline bool extractBasePtrOpAndPHIs(GetElementPtrInst *PtrOp, Value *&BasePtrOp,
                 m_OneOfTrackable(
                     which,
                     linearFuncOfPHI(ScaleOp, OffsetOp, PHI, scale, offset),
-                    m_ConstantInt()))) {
+                    m_ConstantInt()
+                  ))) {
         if (which == 0) { // linearFuncOfPHI
 
           if (ScaleOp == SCALEOP_NONE)
@@ -640,7 +660,15 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
               const SCEVConstant *ConstStep = dyn_cast<SCEVConstant>(Step);
               if (!ConstStep) {
                 // TODO: Check for loop invariant step
-                // !SE.isLoopInvariant(Step, LI.getLoopFor(phi->getParent()))
+                // if(SE.isLoopInvariant(Step, LI.getLoopFor(IVar->getParent()))){
+                //   dbgs() << "Loop step: ";
+                //   Step->print(dbgs());
+                //   dbgs() << "\n";
+                // } else{
+                //   matchBounds = false;
+                //   dbgs() << "Loop is not loop invariant, so cannot be a stencil\n";
+                // }
+                // 
                 dbgs() << "Loop step is not constant!\n";
               } else {
                 dbgs() << "Loop step: ";

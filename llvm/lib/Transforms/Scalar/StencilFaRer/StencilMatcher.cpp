@@ -700,7 +700,7 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
 
         Loop *OuterLoop = getOuterLoop(LI, IVars);
         // Verify that we only have one block we're exiting from.
-        if (OuterLoop->getExitingBlock() == nullptr) {
+        if (OuterLoop == nullptr || OuterLoop->getExitingBlock() == nullptr) {
           LLVM_DEBUG(dbgs() << "Loop had multiple exiting blocks.\n");
           continue;
         }

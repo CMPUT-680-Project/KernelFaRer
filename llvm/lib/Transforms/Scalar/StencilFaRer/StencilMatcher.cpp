@@ -109,21 +109,23 @@ template <> struct match_one_of_trackable<> {
 };
 
 // Matches either the head or tail of variadic OneOf argument list.
-template <typename Head, typename... List> struct match_one_of_trackable<Head, List...> {
+template <typename Head, typename... List>
+struct match_one_of_trackable<Head, List...> {
   int &Index;
   Head Op;
   match_one_of_trackable<List...> Next;
 
-  match_one_of_trackable(int &Index, Head Op, List... Next) : Index(Index), Op(Op), Next(Index, Next...) {}
+  match_one_of_trackable(int &Index, Head Op, List... Next)
+      : Index(Index), Op(Op), Next(Index, Next...) {}
 
   template <typename ITy> bool match(ITy *V) {
-    if(Op.match(V)) {
+    if (Op.match(V)) {
       return true;
-    } else{
+    } else {
       Index++;
-      if(Next.match(V)){
+      if (Next.match(V)) {
         return true;
-      } else{
+      } else {
         Index = -1;
         return false;
       }
@@ -141,9 +143,10 @@ inline match_one_of<PatternList...> m_OneOf(PatternList... Patterns) {
 /// This helper class is used to or-combine a list of matchers.
 /// Matches one of the patterns in a list.
 template <typename... PatternList>
-inline match_one_of_trackable<PatternList...> m_OneOfTrackable(int &Index, PatternList... Patterns) {
-  Index=0;
-  return match_one_of_trackable<PatternList...>(Index,Patterns...);
+inline match_one_of_trackable<PatternList...>
+m_OneOfTrackable(int &Index, PatternList... Patterns) {
+  Index = 0;
+  return match_one_of_trackable<PatternList...>(Index, Patterns...);
 }
 
 /// This helper class implements the same behavior as m_CombineOr but also
@@ -189,11 +192,9 @@ PHINode *extractOutermostPHI(PHINode *const &V) {
     WorkQueue.remove(PHI);
 
     if (match(PHI,
-              m_OneOf(
-                m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_Value()),
-                m_PHI(m_Value(), m_c_Add(m_Specific(PHI), m_Value())),
-                m_PHI(m_ConstantInt(), m_ConstantInt())
-              ))){
+              m_OneOf(m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_Value()),
+                      m_PHI(m_Value(), m_c_Add(m_Specific(PHI), m_Value())),
+                      m_PHI(m_ConstantInt(), m_ConstantInt())))) {
       return const_cast<PHINode *>(PHI);
     }
 
@@ -340,29 +341,74 @@ static Loop *getOuterLoop(LoopInfo &LI, const SmallVector<Value *, 3> &IVars) {
   return outer;
 }
 
-inline auto offsetPHIOrPHI(PHINode *&PHI, uint64_t &offset) {
-  return m_OneOf(m_PHI(PHI), m_c_Add(m_PHI(PHI), m_ConstantInt(offset)));
+typedef std::tuple<int, PHINode *, uint64_t>
+    ScaledPHINode; // <ScaleOp, PHINode *, scale>
+
+const int SCALEOP_NONE = 0;
+// const int SCALEOP_MUL = 1;
+// const int SCALEOP_SHL = 2;
+inline auto scaledPHIOrPHI(int &ScaleOp, PHINode *&PHI, uint64_t &scale) {
+  return m_OneOfTrackable(ScaleOp, m_PHI(PHI),
+                          m_c_Mul(m_PHI(PHI), m_ConstantInt(scale)),
+                          m_Shl(m_PHI(PHI), m_ConstantInt(scale)));
 }
 
-inline bool matchStencilLoad(const Value *Inst, Value *&BasePtrOp,
-                             SmallVector<PHINode *, 3> &PHIs,
-                             SmallVector<uint64_t, 3> &offsets) {
-  GetElementPtrInst *PtrOp;
-  uint64_t offset;
-  if (!match(Inst, m_Load(m_GEP(PtrOp))))
-    return false;
+const int OFFSETOP_NONE = 0;
+const int OFFSETOP_ADD = 1;
+const int OFFSETOP_OR1 = 2;
+inline auto linearFuncOfPHI(int &ScaleOp, int &OffsetOp, PHINode *&PHI,
+                            uint64_t &scale, uint64_t &offset) {
+  return m_OneOfTrackable(
+      OffsetOp, scaledPHIOrPHI(ScaleOp, PHI, scale),
+      m_c_Add(scaledPHIOrPHI(ScaleOp, PHI, scale), m_ConstantInt(offset)),
+      m_c_Or(scaledPHIOrPHI(ScaleOp, PHI, scale), m_SpecificInt(1)));
+}
+
+inline bool extractBasePtrOpAndPHIs(GetElementPtrInst *PtrOp, Value *&BasePtrOp,
+                                    SmallVector<ScaledPHINode, 3> &PHIs,
+                                    SmallVector<uint64_t, 3> &offsets) {
   do {
     auto N = PtrOp->getNumOperands();
     for (size_t i = 1; i < N; ++i) {
-      PHINode *phi = nullptr;
-      offset = 0;
+      PHINode *PHI = nullptr;
+      int which = -1;
+      int OffsetOp;
+      int ScaleOp;
+      uint64_t scale;
+      uint64_t offset;
       if (match(PtrOp->getOperand(N - i),
-                m_CombineOr(offsetPHIOrPHI(phi, offset), m_ConstantInt()))) {
-        if (phi) {
-          PHIs.push_back(phi);
-          offsets.push_back(offset);
-        } else
+                m_OneOfTrackable(
+                    which,
+                    linearFuncOfPHI(ScaleOp, OffsetOp, PHI, scale, offset),
+                    m_ConstantInt()))) {
+        if (which == 0) { // linearFuncOfPHI
+
+          if (ScaleOp == SCALEOP_NONE)
+            scale = 1;
+          PHIs.push_back(std::make_tuple(ScaleOp, PHI, scale));
+
+          switch (OffsetOp) {
+          case OFFSETOP_NONE:
+            offsets.push_back(0);
+            break;
+          case OFFSETOP_ADD:
+            offsets.push_back(offset);
+            break;
+          case OFFSETOP_OR1:
+            offsets.push_back(1);
+            break;
+          default:
+            dbgs() << "! Unknown OffsetOp. This should not happen.\n";
+            return false;
+          }
+
+        } else if (which == 1) { // m_ConstantInt
           break;
+        } else {
+          dbgs() << "! Unknown match result. This should not happen.\n";
+          return false;
+        }
+
       } else
         return false;
     }
@@ -372,35 +418,30 @@ inline bool matchStencilLoad(const Value *Inst, Value *&BasePtrOp,
   return true;
 }
 
+inline bool matchStencilLoad(const Value *Inst, Value *&BasePtrOp,
+                             SmallVector<ScaledPHINode, 3> &PHIs,
+                             SmallVector<uint64_t, 3> &offsets) {
+  GetElementPtrInst *PtrOp;
+  if (!match(Inst, m_Load(m_GEP(PtrOp))))
+    return false;
+  return extractBasePtrOpAndPHIs(PtrOp, BasePtrOp, PHIs, offsets);
+}
+
 static bool matchStencilStore(const Value *Inst, Value *&BasePtrOp,
-                              SmallVector<PHINode *, 3> &PHIs,
+                              SmallVector<ScaledPHINode, 3> &PHIs,
+                              SmallVector<uint64_t, 3> &offsets,
                               Value *&ValueOp) {
   GetElementPtrInst *PtrOp;
   if (!match(Inst, m_Store(m_Value(ValueOp), m_GEP(PtrOp))))
     return false;
-  do {
-    auto N = PtrOp->getNumOperands();
-    for (size_t i = 1; i < N; ++i) {
-      PHINode *phi = nullptr;
-      if (match(PtrOp->getOperand(N - i),
-                m_CombineOr(m_PHI(phi), m_ConstantInt()))) {
-        if (phi)
-          PHIs.push_back(phi);
-        else
-          break;
-      } else
-        return false;
-    }
-  } while (match(PtrOp->getPointerOperand(),
-                 m_CombineOr(m_Load(m_GEP(PtrOp)), m_GEP(PtrOp))));
-  BasePtrOp = PtrOp;
-  return true;
+  return extractBasePtrOpAndPHIs(PtrOp, BasePtrOp, PHIs, offsets);
 }
 
-inline bool matchExpr(const Value *seed, const Value *OutPtr,
-                      const SmallVector<PHINode *, 3> &PHIs,
-                      SmallVector<Value *, 3> &InPtrs, bool &SelfReferencing) {
-  dbgs() << "[expr]\n";
+inline bool matchStencilExpr(const Value *seed, const Value *OutPtr,
+                             const SmallVector<ScaledPHINode, 3> &ScaledPHIs,
+                             SmallVector<Value *, 3> &InPtrs,
+                             bool &SelfReferencing) {
+  dbgs() << "[Expression Tree]\n";
   SmallSetVector<const Value *, 8> WorkQueue;
   WorkQueue.insert(seed);
 
@@ -409,7 +450,7 @@ inline bool matchExpr(const Value *seed, const Value *OutPtr,
   Value *UnArg;
 
   Value *LoadPtr;
-  SmallVector<PHINode *, 3> LoadPHIs;
+  SmallVector<ScaledPHINode, 3> LoadPHIs;
   SmallVector<uint64_t, 3> LoadOffsets;
   SmallSet<Value *, 3> LoadPtrs;
 
@@ -436,14 +477,14 @@ inline bool matchExpr(const Value *seed, const Value *OutPtr,
       dbgs() << "\n";
 
     } else if (matchStencilLoad(v, LoadPtr, LoadPHIs, LoadOffsets)) {
-      if (LoadPHIs.size() != PHIs.size()) {
-        dbgs() << "PHI mismatch between loads and the store.\n";
+      if (LoadPHIs.size() != ScaledPHIs.size()) {
+        dbgs() << "Fail: Number of PHI Nodes differ between stencil load and store.\n";
         return false;
       }
 
       for (size_t i = 0; i < LoadPHIs.size(); ++i)
-        if (LoadPHIs[i] != PHIs[i]) {
-          dbgs() << "PHI mismatch between loads and the store.\n";
+        if (LoadPHIs[i] != ScaledPHIs[i]) {
+          dbgs() << "Fail: PHI node mismatch between stencil load and store indices.\n";
           return false;
         }
 
@@ -456,7 +497,7 @@ inline bool matchExpr(const Value *seed, const Value *OutPtr,
       if (LoadPtr == OutPtr)
         SelfReferencing = true;
 
-      dbgs() << "Stencil Pattern Access (Leaf) to array `" << LoadPtr->getName()
+      dbgs() << "Stencil Load (Leaf) to array `" << LoadPtr->getName()
              << "` | Offsets: ";
       for (uint64_t offset : LoadOffsets) {
         dbgs() << int64_t(offset) << " ";
@@ -467,7 +508,7 @@ inline bool matchExpr(const Value *seed, const Value *OutPtr,
       LoadOffsets.clear();
 
     } else if (isa<LoadInst>(v)) {
-      dbgs() << "Unrecognized load: ";
+      dbgs() << "Fail: Unrecognized load: ";
       v->print(dbgs());
       dbgs() << "\n";
       return false;
@@ -520,19 +561,29 @@ static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
                          const Loop *L, LoopInfo &LI, ScalarEvolution &SE) {
   // Check for stencil store and extract induction variables
   Value *StoreInstAsValue = static_cast<Value *>(&SeedInst);
-  SmallVector<PHINode *, 3> PHIs;
+  SmallVector<ScaledPHINode, 3> ScaledPHIs;
+  SmallVector<uint64_t, 3> StoreOffsets;
   Value *StoreValue;
-  if (!matchStencilStore(StoreInstAsValue, OutPtr, PHIs, StoreValue)){
+  if (!matchStencilStore(StoreInstAsValue, OutPtr, ScaledPHIs, StoreOffsets,
+                         StoreValue)) {
     dbgs() << "Not a stencil store.\n";
     return false;
   }
 
+  dbgs() << "Potential stencil store to array `" << OutPtr->getName()
+         << "` | Offsets: ";
+  for (uint64_t offset : StoreOffsets) {
+    dbgs() << int64_t(offset) << " ";
+  }
+  dbgs() << "\n";
+
   // Match PHIs to loops by checking if they are auxiliary induction vars
   SmallSet<const Loop *, 4> Loops =
-      getLoopVector(L, L->getLoopDepth() - PHIs.size());
-  for (size_t i = 0; i < PHIs.size(); ++i) {
+      getLoopVector(L, L->getLoopDepth() - ScaledPHIs.size());
+  for (size_t i = 0; i < ScaledPHIs.size(); ++i) {
+    PHINode *PHI = std::get<1>(ScaledPHIs[i]);
     bool found = false;
-    PHINode *outermostPHI = extractOutermostPHI(PHIs[i]);
+    PHINode *outermostPHI = extractOutermostPHI(PHI);
     for (auto Loop : Loops) {
       if (isPHIAuxIndVarForLoop(outermostPHI, Loop, LI, SE)) {
         IVars.push_back(outermostPHI);
@@ -543,12 +594,13 @@ static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
     }
     if (!found) {
       dbgs() << "Could not find a loop for PHI: ";
-      PHIs[i]->print(dbgs());
+      std::get<1>(ScaledPHIs[i])->print(dbgs());
       return false;
     }
   }
 
-  return matchExpr(StoreValue, OutPtr, PHIs, InPtrs, SelfReferencing);
+  return matchStencilExpr(StoreValue, OutPtr, ScaledPHIs, InPtrs,
+                          SelfReferencing);
 }
 
 namespace StencilFaRer {
@@ -586,11 +638,11 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
               const SCEVAddRecExpr *AR = dyn_cast<SCEVAddRecExpr>(PhiScev);
               const SCEV *Step = AR->getStepRecurrence(SE);
               const SCEVConstant *ConstStep = dyn_cast<SCEVConstant>(Step);
-              if (!ConstStep){
+              if (!ConstStep) {
                 // TODO: Check for loop invariant step
                 // !SE.isLoopInvariant(Step, LI.getLoopFor(phi->getParent()))
                 dbgs() << "Loop step is not constant!\n";
-              } else{
+              } else {
                 dbgs() << "Loop step: ";
                 ConstStep->getValue()->print(dbgs());
                 dbgs() << "\n";

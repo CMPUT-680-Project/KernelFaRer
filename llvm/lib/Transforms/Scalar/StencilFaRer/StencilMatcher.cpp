@@ -198,11 +198,13 @@ PHINode *extractOutermostPHI(PHINode *const &V) {
     return nullptr;
 
   SmallSetVector<const PHINode *, 8> WorkQueue;
+  SmallSet<const PHINode *, 8> Seen;
   WorkQueue.insert(V);
 
   while (!WorkQueue.empty()) {
     const auto *PHI = WorkQueue.front();
     WorkQueue.remove(PHI);
+    Seen.insert(V);
 
     if (match(PHI,
               m_OneOf(m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_Value()),
@@ -213,7 +215,8 @@ PHINode *extractOutermostPHI(PHINode *const &V) {
 
     for (const Use &Op : PHI->incoming_values())
       if (auto *InPHI = dyn_cast_or_null<PHINode>(&Op))
-        WorkQueue.insert(InPHI);
+        if (!Seen.count(InPHI))
+          WorkQueue.insert(InPHI);
   }
   return nullptr;
 }
@@ -620,6 +623,7 @@ static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
       return false;
     }
   }
+  LLVM_DEBUG(dbgs() << "Successfully obtained induction variables.\n");
 
   return matchStencilExpr(StoreValue, OutPtr, ScaledPHIs, InPtrs,
                           SelfReferencing);

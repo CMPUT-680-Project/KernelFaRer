@@ -51,8 +51,8 @@ bool runImpl(Function &F, StencilMatcher::Result &SPR) {
 // the change is possible
 PreservedAnalyses StencilFinderPass::run(Function &F,
                                          FunctionAnalysisManager &FAM) {
-  LLVM_DEBUG(dbgs() << "Function: ");
-  F.print(dbgs());
+  dbgs() << "[StencilFinder]\nProcessing function: " << F.getName() << "\n";
+  LLVM_DEBUG(F.print(dbgs()));
   LoopInfo &LI = FAM.getResult<LoopAnalysis>(F);
   DominatorTree &DT = FAM.getResult<DominatorTreeAnalysis>(F);
   ScalarEvolution &SE = FAM.getResult<ScalarEvolutionAnalysis>(F);

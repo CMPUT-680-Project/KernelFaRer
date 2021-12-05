@@ -25,7 +25,7 @@ using namespace llvm;
 using namespace llvm::PatternMatch;
 using namespace StencilFaRer;
 
-#define DEBUG_TYPE "stencil-matcher"
+#define DEBUG_TYPE "stencil-finder-pass"
 
 namespace llvm {
 // Below novel and extended versions of matchers from PatternMatch are provided.
@@ -134,8 +134,7 @@ struct match_one_of_trackable<Head, List...> {
 };
 
 // Matches either the head or tail of variadic OneOf argument list.
-template <typename... List>
-struct match_one_of_trackable_wrapper {
+template <typename... List> struct match_one_of_trackable_wrapper {
   int &Index;
   match_one_of_trackable<List...> Next;
 
@@ -143,7 +142,7 @@ struct match_one_of_trackable_wrapper {
       : Index(Index), Next(Index, Next...) {}
 
   template <typename ITy> bool match(ITy *V) {
-    Index=0;
+    Index = 0;
     return Next.match(V);
   }
 };
@@ -362,12 +361,9 @@ const int SCALEOP_NONE = 0;
 // const int SCALEOP_MUL = 1;
 // const int SCALEOP_SHL = 2;
 inline auto scaledPHIOrPHI(int &ScaleOp, PHINode *&PHI, uint64_t &scale) {
-  return m_OneOfTrackable(
-    ScaleOp, 
-    m_PHI(PHI),
-    m_c_Mul(m_PHI(PHI), m_ConstantInt(scale)),
-    m_Shl(m_PHI(PHI), m_ConstantInt(scale))
-  );
+  return m_OneOfTrackable(ScaleOp, m_PHI(PHI),
+                          m_c_Mul(m_PHI(PHI), m_ConstantInt(scale)),
+                          m_Shl(m_PHI(PHI), m_ConstantInt(scale)));
 }
 
 const int OFFSETOP_NONE = 0;
@@ -376,11 +372,9 @@ const int OFFSETOP_OR1 = 2;
 inline auto linearFuncOfPHI(int &ScaleOp, int &OffsetOp, PHINode *&PHI,
                             uint64_t &scale, uint64_t &offset) {
   return m_OneOfTrackable(
-      OffsetOp, 
-      scaledPHIOrPHI(ScaleOp, PHI, scale),
+      OffsetOp, scaledPHIOrPHI(ScaleOp, PHI, scale),
       m_c_Add(scaledPHIOrPHI(ScaleOp, PHI, scale), m_ConstantInt(offset)),
-      m_c_Or(scaledPHIOrPHI(ScaleOp, PHI, scale), m_SpecificInt(1))
-  );
+      m_c_Or(scaledPHIOrPHI(ScaleOp, PHI, scale), m_SpecificInt(1)));
 }
 
 inline bool extractBasePtrOpAndPHIs(GetElementPtrInst *PtrOp, Value *&BasePtrOp,
@@ -399,8 +393,7 @@ inline bool extractBasePtrOpAndPHIs(GetElementPtrInst *PtrOp, Value *&BasePtrOp,
                 m_OneOfTrackable(
                     which,
                     linearFuncOfPHI(ScaleOp, OffsetOp, PHI, scale, offset),
-                    m_ConstantInt()
-                  ))) {
+                    m_ConstantInt()))) {
         if (which == 0) { // linearFuncOfPHI
 
           if (ScaleOp == SCALEOP_NONE)
@@ -418,14 +411,16 @@ inline bool extractBasePtrOpAndPHIs(GetElementPtrInst *PtrOp, Value *&BasePtrOp,
             offsets.push_back(1);
             break;
           default:
-            dbgs() << "! Unknown OffsetOp. This should not happen.\n";
+            LLVM_DEBUG(dbgs()
+                       << "! Unknown OffsetOp. This should not happen.\n");
             return false;
           }
 
         } else if (which == 1) { // m_ConstantInt
           break;
         } else {
-          dbgs() << "! Unknown match result. This should not happen.\n";
+          LLVM_DEBUG(dbgs()
+                     << "! Unknown match result. This should not happen.\n");
           return false;
         }
 
@@ -461,7 +456,7 @@ inline bool matchStencilExpr(const Value *seed, const Value *OutPtr,
                              const SmallVector<ScaledPHINode, 3> &ScaledPHIs,
                              SmallVector<Value *, 3> &InPtrs,
                              bool &SelfReferencing) {
-  dbgs() << "[Expression Tree]\n";
+  LLVM_DEBUG(dbgs() << "[Expression Tree]\n");
   SmallSetVector<const Value *, 8> WorkQueue;
   WorkQueue.insert(seed);
 
@@ -479,32 +474,34 @@ inline bool matchStencilExpr(const Value *seed, const Value *OutPtr,
     WorkQueue.remove(v);
 
     if (match(v, m_c_BinOp(m_Value(BinLHS), m_Value(BinRHS)))) {
-      dbgs() << "BinOp: ";
-      v->print(dbgs());
-      dbgs() << "\n";
+      LLVM_DEBUG(dbgs() << "BinOp: ");
+      LLVM_DEBUG(v->print(dbgs()));
+      LLVM_DEBUG(dbgs() << "\n");
       WorkQueue.insert(BinLHS);
       WorkQueue.insert(BinRHS);
 
     } else if (match(v, m_UnOp(m_Value(UnArg)))) {
-      dbgs() << "UnOp: ";
-      v->print(dbgs());
-      dbgs() << "\n";
+      LLVM_DEBUG(dbgs() << "UnOp: ");
+      LLVM_DEBUG(v->print(dbgs()));
+      LLVM_DEBUG(dbgs() << "\n");
       WorkQueue.insert(UnArg);
 
     } else if (match(v, m_Constant())) {
-      dbgs() << "Constant (Leaf): ";
-      v->print(dbgs());
-      dbgs() << "\n";
+      LLVM_DEBUG(dbgs() << "Constant (Leaf): ");
+      LLVM_DEBUG(v->print(dbgs()));
+      LLVM_DEBUG(dbgs() << "\n");
 
     } else if (matchStencilLoad(v, LoadPtr, LoadPHIs, LoadOffsets)) {
       if (LoadPHIs.size() != ScaledPHIs.size()) {
-        dbgs() << "Fail: Number of PHI Nodes differ between stencil load and store.\n";
+        LLVM_DEBUG(dbgs() << "Fail: Number of PHI Nodes differ between stencil "
+                             "load and store.\n");
         return false;
       }
 
       for (size_t i = 0; i < LoadPHIs.size(); ++i)
         if (LoadPHIs[i] != ScaledPHIs[i]) {
-          dbgs() << "Fail: PHI node mismatch between stencil load and store indices.\n";
+          LLVM_DEBUG(dbgs() << "Fail: PHI node mismatch between stencil load "
+                               "and store indices.\n");
           return false;
         }
 
@@ -517,48 +514,49 @@ inline bool matchStencilExpr(const Value *seed, const Value *OutPtr,
       if (LoadPtr == OutPtr)
         SelfReferencing = true;
 
-      dbgs() << "Stencil Load (Leaf) to array `" << LoadPtr->getName()
-             << "` | Offsets: ";
+      LLVM_DEBUG(dbgs() << "Stencil Load (Leaf) to array `"
+                        << LoadPtr->getName() << "` | Offsets: ");
       for (uint64_t offset : LoadOffsets) {
-        dbgs() << int64_t(offset) << " ";
+        LLVM_DEBUG(dbgs() << int64_t(offset) << " ");
       }
-      dbgs() << "\n";
+      LLVM_DEBUG(dbgs() << "\n");
 
       LoadPHIs.clear();
       LoadOffsets.clear();
 
     } else if (isa<LoadInst>(v)) {
-      dbgs() << "Fail: Unrecognized load: ";
-      v->print(dbgs());
-      dbgs() << "\n";
+      LLVM_DEBUG(dbgs() << "Fail: Unrecognized load: ");
+      LLVM_DEBUG(v->print(dbgs()));
+      LLVM_DEBUG(dbgs() << "\n");
       return false;
 
     } else {
-      dbgs() << "Leaf: ";
-      v->print(dbgs());
-      dbgs() << "\n";
+      LLVM_DEBUG(dbgs() << "Leaf: ");
+      LLVM_DEBUG(v->print(dbgs()));
+      LLVM_DEBUG(dbgs() << "\n");
     }
   }
 
   if (InPtrs.empty()) {
-    dbgs() << "Not a stencil expression; there are no input arrays.\n";
+    LLVM_DEBUG(
+        dbgs() << "Not a stencil expression; there are no input arrays.\n");
     return false;
   }
 
-  dbgs() << "Found a stencil expr!\n";
+  LLVM_DEBUG(dbgs() << "Found a stencil expr!\n");
   return true;
 }
 
 inline bool isPHIAuxIndVarForLoop(PHINode *phi, const Loop *L, LoopInfo &LI,
                                   ScalarEvolution &SE) {
   if (phi == nullptr) {
-    dbgs() << "phi is nullptr. This should not happen\n";
+    LLVM_DEBUG(dbgs() << "phi is nullptr. This should not happen\n");
     return false;
   }
   if (L->getLoopPreheader() == nullptr) {
-    dbgs() << "Loop missing preheader. Trying to use loop info\n";
+    LLVM_DEBUG(dbgs() << "Loop missing preheader. Trying to use loop info\n");
     if (LI.getLoopFor(phi->getParent()) == L) {
-      dbgs() << "Matched loop via loop info\n";
+      LLVM_DEBUG(dbgs() << "Matched loop via loop info\n");
       return true;
     }
     return false;
@@ -586,16 +584,16 @@ static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
   Value *StoreValue;
   if (!matchStencilStore(StoreInstAsValue, OutPtr, ScaledPHIs, StoreOffsets,
                          StoreValue)) {
-    dbgs() << "Not a stencil store.\n";
+    LLVM_DEBUG(dbgs() << "Not a stencil store.\n");
     return false;
   }
 
-  dbgs() << "Potential stencil store to array `" << OutPtr->getName()
-         << "` | Offsets: ";
+  LLVM_DEBUG(dbgs() << "Potential stencil store to array `" << OutPtr->getName()
+                    << "` | Offsets: ");
   for (uint64_t offset : StoreOffsets) {
-    dbgs() << int64_t(offset) << " ";
+    LLVM_DEBUG(dbgs() << int64_t(offset) << " ");
   }
-  dbgs() << "\n";
+  LLVM_DEBUG(dbgs() << "\n");
 
   // Match PHIs to loops by checking if they are auxiliary induction vars
   SmallSet<const Loop *, 4> Loops =
@@ -613,7 +611,7 @@ static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
       }
     }
     if (!found) {
-      dbgs() << "Could not find a loop for PHI: ";
+      LLVM_DEBUG(dbgs() << "Could not find a loop for PHI: ");
       std::get<1>(ScaledPHIs[i])->print(dbgs());
       return false;
     }
@@ -658,41 +656,45 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
               const SCEVAddRecExpr *AR = dyn_cast<SCEVAddRecExpr>(PhiScev);
               const SCEV *Step = AR->getStepRecurrence(SE);
               const SCEVConstant *ConstStep = dyn_cast<SCEVConstant>(Step);
-              const PHINode* IVarAsPHI =static_cast<PHINode *>(IVar);
+              const PHINode *IVarAsPHI = static_cast<PHINode *>(IVar);
               if (!ConstStep) {
                 // TODO: Check for loop invariant step
-                if(IVarAsPHI && SE.isLoopInvariant(Step, LI.getLoopFor(IVarAsPHI->getParent()))){
-                  dbgs() << "Loop step: ";
+                if (IVarAsPHI &&
+                    SE.isLoopInvariant(Step,
+                                       LI.getLoopFor(IVarAsPHI->getParent()))) {
+                  LLVM_DEBUG(dbgs() << "Loop step: ");
                   Step->print(dbgs());
-                  dbgs() << "\n";
-                } else{
+                  LLVM_DEBUG(dbgs() << "\n");
+                } else {
                   matchBounds = false;
-                  dbgs() << "Loop is not loop invariant, so cannot be a stencil\n";
+                  LLVM_DEBUG(dbgs() << "Loop is not loop invariant, so cannot "
+                                       "be a stencil\n");
                 }
-                dbgs() << "Loop step is not constant!\n";
+                LLVM_DEBUG(dbgs() << "Loop step is not constant!\n");
               } else {
-                dbgs() << "Loop step: ";
+                LLVM_DEBUG(dbgs() << "Loop step: ");
                 ConstStep->getValue()->print(dbgs());
-                dbgs() << "\n";
+                LLVM_DEBUG(dbgs() << "\n");
               }
-              dbgs() << "Induction Variable ";
+              LLVM_DEBUG(dbgs() << "Induction Variable ");
               IVar->print(dbgs());
-              dbgs() << "\n";
-              dbgs() << "Loop lower bound: ";
+              LLVM_DEBUG(dbgs() << "\n");
+              LLVM_DEBUG(dbgs() << "Loop lower bound: ");
               ILBound->print(dbgs());
-              dbgs() << "\n";
-              dbgs() << "Loop upper bound: ";
+              LLVM_DEBUG(dbgs() << "\n");
+              LLVM_DEBUG(dbgs() << "Loop upper bound: ");
               IUBound->print(dbgs());
-              dbgs() << "\n";
+              LLVM_DEBUG(dbgs() << "\n");
             } else {
               matchBounds = false;
             }
           }
           if (matchBounds) {
-            dbgs() << "Found a stencil!\n";
+            LLVM_DEBUG(dbgs() << "Found a stencil!\n");
             if (SelfReferencing)
-              dbgs() << "The stencil is self-referential.\n";
-            dbgs() << "The stencil has " << InPtrs.size() << " input arrays.\n";
+              LLVM_DEBUG(dbgs() << "The stencil is self-referential.\n");
+            LLVM_DEBUG(dbgs() << "The stencil has " << InPtrs.size()
+                              << " input arrays.\n");
           }
         } else {
           continue;
@@ -718,15 +720,15 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
     }
   }
 
-  dbgs() << "[Summary]\n";
   dbgs() << "Found " << ListOfStencils->size() << " stencil(s):\n";
   for (auto &SC : *ListOfStencils) {
-    dbgs() << "Stencil loop starting at ";
+    dbgs() << "Stencil loop at ";
     SC->getAssociatedLoop().getStartLoc().print(dbgs());
-    dbgs() << " with reduction store at ";
+    dbgs() << " with reduction and store at ";
     SC->getReductionStore().getDebugLoc().print(dbgs());
     dbgs() << "\n";
   }
+  dbgs() << "End of StencilFinder Pass\n";
   return ListOfStencils;
 }
 

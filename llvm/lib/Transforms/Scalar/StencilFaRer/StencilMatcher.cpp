@@ -587,6 +587,10 @@ static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
     LLVM_DEBUG(dbgs() << "Not a stencil store.\n");
     return false;
   }
+  if (ScaledPHIs.empty()) {
+    LLVM_DEBUG(dbgs() << "Store has no induction variables; not a stencil.\n");
+    return false;
+  }
 
   LLVM_DEBUG(dbgs() << "Potential stencil store to array `" << OutPtr->getName()
                     << "` | Offsets: ");

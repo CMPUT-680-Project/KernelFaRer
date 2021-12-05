@@ -198,13 +198,13 @@ PHINode *extractOutermostPHI(PHINode *const &V) {
     return nullptr;
 
   SmallSetVector<const PHINode *, 8> WorkQueue;
-  SmallSet<const PHINode *, 8> Seen;
+  SmallSet<const PHINode *, 8> Visited;
   WorkQueue.insert(V);
 
   while (!WorkQueue.empty()) {
     const auto *PHI = WorkQueue.front();
     WorkQueue.remove(PHI);
-    Seen.insert(V);
+    Visited.insert(PHI);
 
     if (match(PHI,
               m_OneOf(m_PHI(m_c_Add(m_Specific(PHI), m_Value()), m_Value()),
@@ -215,7 +215,7 @@ PHINode *extractOutermostPHI(PHINode *const &V) {
 
     for (const Use &Op : PHI->incoming_values())
       if (auto *InPHI = dyn_cast_or_null<PHINode>(&Op))
-        if (!Seen.count(InPHI))
+        if (!Visited.count(InPHI))
           WorkQueue.insert(InPHI);
   }
   return nullptr;

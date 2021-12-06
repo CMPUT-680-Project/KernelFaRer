@@ -223,24 +223,23 @@ PHINode *extractOutermostPHI(PHINode *const &V) {
 
 // A helper function that the inserts in Loops list the innermost loop nested
 // in L, or L itself if L does not have sub-loops.
-static void collectInnermostLoops(const Loop *L,
-                                  SmallSetVector<const Loop *, 8> &Loops) {
-  SmallSetVector<const Loop *, 8> WorkQueue;
+static void collectInnermostLoops(Loop *L, SmallSetVector<Loop *, 8> &Loops) {
+  SmallSetVector<Loop *, 8> WorkQueue;
 
   if (L->getSubLoops().size() == 0) {
     Loops.insert(L);
     return;
   }
 
-  for (const auto *SL : L->getSubLoops())
+  for (auto *SL : L->getSubLoops())
     WorkQueue.insert(SL);
 
   while (!WorkQueue.empty()) {
-    const auto *SL = WorkQueue.front();
+    auto *SL = WorkQueue.front();
     WorkQueue.remove(SL);
 
     bool HasSubLoop = false;
-    for (const auto *SSL : SL->getSubLoops()) {
+    for (auto *SSL : SL->getSubLoops()) {
       HasSubLoop = true;
       WorkQueue.insert(SSL);
     }
@@ -251,9 +250,8 @@ static void collectInnermostLoops(const Loop *L,
 
 // A helper function that collects into Loops all loops in a function that are
 // nested at level 1 or deeper
-static void
-collectLoopsWithDepthOneOrDeeper(LoopInfo &LI,
-                                 SmallSetVector<const Loop *, 8> &Loops) {
+static void collectLoopsWithDepthOneOrDeeper(LoopInfo &LI,
+                                             SmallSetVector<Loop *, 8> &Loops) {
   for (auto *L : LI.getLoopsInPreorder()) {
     if (Loops.count(L) == 0) {
       collectInnermostLoops(L, Loops);
@@ -638,9 +636,9 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
                                            ScalarEvolution &SE) {
   auto ListOfStencils =
       std::make_unique<SmallVector<std::unique_ptr<StencilComputation>, 4>>();
-  SmallSetVector<const Loop *, 8> LoopsToProcess;
+  SmallSetVector<Loop *, 8> LoopsToProcess;
   collectLoopsWithDepthOneOrDeeper(LI, LoopsToProcess);
-  for (const auto *L : LoopsToProcess) {
+  for (auto *L : LoopsToProcess) {
     for (auto *BB : L->getBlocks()) {
       for (auto Inst = BB->begin(); Inst != BB->end(); Inst++) {
         if (!isa<StoreInst>(Inst))
@@ -724,17 +722,27 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
           continue;
         }
 
+        dbgs() << "Outer loop ";
+        OuterLoop->getStartLoc().print(dbgs());
+        dbgs() << ", innermost loop ";
+        L->getStartLoc().print(dbgs());
+        dbgs() << ", with reduction and store at ";
+        Inst->getDebugLoc().print(dbgs());
+        dbgs() << "\n";
+
         ListOfStencils->push_back(
-            std::make_unique<StencilComputation>(*OuterLoop, *Inst));
+            std::make_unique<StencilComputation>(*OuterLoop, *L, *Inst));
       }
     }
   }
 
   dbgs() << "Found " << ListOfStencils->size() << " stencil(s):\n";
   for (auto &SC : *ListOfStencils) {
-    dbgs() << "Stencil loop at ";
-    SC->getAssociatedLoop().getStartLoc().print(dbgs());
-    dbgs() << " with reduction and store at ";
+    dbgs() << "Stencil outermost loop at ";
+    SC->getAssociatedOutermostLoop().getStartLoc().print(dbgs());
+    dbgs() << ", innermost loop at ";
+    SC->getAssociatedInnermostLoop().getStartLoc().print(dbgs());
+    dbgs() << ", with reduction and store at ";
     SC->getReductionStore().getDebugLoc().print(dbgs());
     dbgs() << "\n";
   }

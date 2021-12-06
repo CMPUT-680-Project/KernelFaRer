@@ -29,12 +29,15 @@ using namespace llvm;
 namespace StencilFaRer {
 
 class StencilComputation {
-  Loop &L;
+  Loop &OutermostL;
+  Loop &InnermostL;
   Instruction &ReductionStore;
 
 public:
-  StencilComputation(Loop &L, Instruction &RS) : L(L), ReductionStore(RS) {}
-  Loop &getAssociatedLoop() const { return L; }
+  StencilComputation(Loop &OutermostL, Loop &InnermostL, Instruction &RS)
+      : OutermostL(OutermostL), InnermostL(InnermostL), ReductionStore(RS) {}
+  Loop &getAssociatedOutermostLoop() const { return OutermostL; }
+  Loop &getAssociatedInnermostLoop() const { return InnermostL; }
   Instruction &getReductionStore() const { return ReductionStore; }
 };
 

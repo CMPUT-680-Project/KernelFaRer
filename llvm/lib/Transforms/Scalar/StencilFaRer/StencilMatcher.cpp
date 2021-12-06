@@ -600,6 +600,8 @@ static bool matchStencil(Instruction &SeedInst, Value *&OutPtr,
   for (uint64_t offset : StoreOffsets) {
     LLVM_DEBUG(dbgs() << int64_t(offset) << " ");
   }
+  LLVM_DEBUG(dbgs() << " | Data type: ");
+  LLVM_DEBUG(StoreValue->getType()->print(dbgs()));
   LLVM_DEBUG(dbgs() << "\n");
 
   // Match PHIs to loops by checking if they are auxiliary induction vars
@@ -659,6 +661,15 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
                                     ILBound) &&
                 matchLoopUpperBound(LI, static_cast<PHINode *>(IVar),
                                     IUBound)) {
+              LLVM_DEBUG(dbgs() << "Induction Variable ");
+              IVar->print(dbgs());
+              LLVM_DEBUG(dbgs() << "\n");
+              LLVM_DEBUG(dbgs() << "Loop lower bound: ");
+              ILBound->print(dbgs());
+              LLVM_DEBUG(dbgs() << "\n");
+              LLVM_DEBUG(dbgs() << "Loop upper bound: ");
+              IUBound->print(dbgs());
+              LLVM_DEBUG(dbgs() << "\n");
               InductionDescriptor IndDesc;
               const SCEV *PhiScev = SE.getSCEV(IVar);
               const SCEVAddRecExpr *AR = dyn_cast<SCEVAddRecExpr>(PhiScev);
@@ -684,15 +695,6 @@ StencilMatcher::Result StencilMatcher::run(Function &F, LoopInfo &LI,
                 ConstStep->getValue()->print(dbgs());
                 LLVM_DEBUG(dbgs() << "\n");
               }
-              LLVM_DEBUG(dbgs() << "Induction Variable ");
-              IVar->print(dbgs());
-              LLVM_DEBUG(dbgs() << "\n");
-              LLVM_DEBUG(dbgs() << "Loop lower bound: ");
-              ILBound->print(dbgs());
-              LLVM_DEBUG(dbgs() << "\n");
-              LLVM_DEBUG(dbgs() << "Loop upper bound: ");
-              IUBound->print(dbgs());
-              LLVM_DEBUG(dbgs() << "\n");
             } else {
               matchBounds = false;
             }

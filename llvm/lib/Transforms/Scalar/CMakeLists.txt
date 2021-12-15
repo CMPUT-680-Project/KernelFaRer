@@ -80,7 +80,6 @@ add_llvm_component_library(LLVMScalarOpts
   GEMMFaRer/GEMMDataAnalysis.cpp
   GEMMFaRer/GEMMMatcher.cpp
   GEMMFaRer/GEMMReplacerPass.cpp
-  StencilFaRer/StencilDataAnalysis.cpp
   StencilFaRer/StencilMatcher.cpp
   StencilFaRer/StencilFinderPass.cpp
 
